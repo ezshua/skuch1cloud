@@ -1,0 +1,227 @@
+﻿﻿# skuch1cloud
+
+Telegram бот для сохранения файлов и медиа от пользователей.
+
+## 🚀 Запуск
+
+```bash
+python .\src\main.py
+```
+
+## 📁 Структура проекта (после рефакторинга)
+
+```text
+skuch1cloud/
+├── src/
+│   ├── config.py          # Конфигурация и константы
+│   ├── utils.py           # Утилиты общего назначения
+│   ├── users.py           # Управление пользователями
+│   ├── file_handler.py    # Сохранение файлов и медиа
+│   ├── handlers.py        # Обработчики Telegram сообщений
+│   ├── bot.py             # Инициализация бота
+│   ├── main.py            # Главная точка входа
+│   └── __main__.py        # Точка входа модуля
+├── pyproject.toml         # Настройки сборки и зависимости проекта
+├── requirements.txt       # Список зависимостей
+└── README.md              # Документация проекта
+```
+
+## ✨ Результаты рефакторинга
+
+### Преимущества новой архитектуры
+
+| Модуль | Назначение | Выгода |
+|--------|-----------|--------|
+| **config.py** | Конфигурация: токены, пути, логирование | Централизованное управление настройками |
+| **utils.py** | Обработка текста, JSON, файловые операции | Переиспользуемые функции, легче тестировать |
+| **users.py** | Логика работы с пользователями | Отделена бизнес-логика от обработчиков |
+| **file_handler.py** | Скачивание и сохранение файлов | Централизованная обработка медиа |
+| **handlers.py** | Обработчики Telegram сообщений | Чистый код обработчиков без вспомогательной логики |
+| **bot.py** | Инициализация бота и диспетчера | Разделение ответственности |
+| **main.py** | Точка входа (11 строк!) | Простота и понятность |
+| **\_\_main\_\_.py** | Точка входа модуля | Удобный запуск проекта как модуля (`python -m src`) |
+
+### Улучшения в коде
+
+✅ **Модульность** — каждый файл отвечает за одну задачу  
+✅ **Переиспользование** — функции можно использовать в других проектах  
+✅ **Тестируемость** — легче писать unit тесты для отдельных модулей  
+✅ **Поддержка** — проще найти и исправить ошибки  
+✅ **Масштабируемость** — легко добавлять новые обработчики  
+✅ **Читаемость** — код стал более организованным и понятным  
+
+## 🔧 Требования
+
+- Python 3.10+
+- aiogram
+- python-dotenv
+
+## 📦 Установка
+
+### 1. Клонирование репозитория
+
+```bash
+git clone <repository-url>
+cd skuch1cloud
+```
+
+### 2. Создание виртуального окружения (рекомендуется)
+
+**Windows:**
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+```
+
+**Linux/macOS:**
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+### 3. Установка зависимостей
+
+```bash
+pip install -r requirements.txt
+```
+
+Или через pyproject.toml:
+```bash
+pip install -e .
+```
+
+## 📝 Конфигурация
+
+Создайте файл `.env` в корневой директории проекта:
+
+```env
+BOT_TOKEN=your_telegram_bot_token_here
+BOT_DATA_PATH=data
+MAX_FILE_SIZE=20971520
+BOT_DATA_PATH_SIZE=524288000
+```
+
+**Где:**
+- `BOT_TOKEN` — токен вашего Telegram бота (получить на @BotFather)
+- `BOT_DATA_PATH` — директория для сохранения файлов от пользователей (по умолчанию: `data`)
+- `MAX_FILE_SIZE` — максимальный размер скачиваемого файла в байтах (по умолчанию: `20971520`, то есть 20 МБ)
+- `BOT_DATA_PATH_SIZE` — общий лимит дискового пространства для сохранения файлов в байтах (по умолчанию: `524288000`, то есть 500 МБ)
+
+## ☁️ Развертывание в Oracle Cloud (Ubuntu 22.04)
+
+Бот работает в режиме **polling**, поэтому дополнительно открывать входящие порты в Virtual Cloud Network (VCN) Oracle или настраивать firewall (`iptables` / `ufw`) не требуется.
+
+Ниже представлены два варианта развертывания в виде системной службы (демона), чтобы бот работал в фоновом режиме и автоматически запускался при перезагрузке сервера.
+
+### Вариант 1: Развертывание от имени суперпользователя (`root`)
+
+Бот устанавливается глобально (в директорию `/opt`) и управляется на уровне всей системы.
+
+1. Перейдите в режим суперпользователя:
+   ```bash
+   sudo su -
+   ```
+2. Обновите пакеты и установите зависимости:
+   ```bash
+   apt update && apt upgrade -y
+   apt install -y python3-pip python3-venv git
+   ```
+3. Склонируйте репозиторий:
+   ```bash
+   git clone <repository-url> /opt/skuch1cloud
+   cd /opt/skuch1cloud
+   ```
+4. Настройте виртуальное окружение и установите проект:
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -e .
+   ```
+5. Создайте конфигурацию:
+   ```bash
+   nano .env
+   ```
+   *(Добавьте ваши настройки, сохраните `Ctrl+O` -> `Enter` и выйдите `Ctrl+X`)*
+6. Создайте systemd-службу:
+   ```bash
+   nano /etc/systemd/system/skuch1cloud.service
+   ```
+   **Содержимое файла:**
+   ```ini
+   [Unit]
+   Description=skuch1cloud Telegram Bot
+   After=network.target
+
+   [Service]
+   Type=simple
+   User=root
+   WorkingDirectory=/opt/skuch1cloud
+   ExecStart=/opt/skuch1cloud/.venv/bin/python src/main.py
+   Restart=always
+   RestartSec=10
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+7. Запустите бота и добавьте в автозагрузку:
+   ```bash
+   systemctl daemon-reload
+   systemctl enable skuch1cloud
+   systemctl start skuch1cloud
+   ```
+
+### Вариант 2: Развертывание от имени обычного пользователя (`alexx`)
+
+Этот вариант предпочтительнее с точки зрения безопасности. Бот будет работать из домашней директории пользователя без предоставления ему root-прав.
+
+1. *(Если применимо)* Зайдите на сервер под пользователем с правами sudo, установите пакеты (`sudo apt install python3-venv git`), создайте пользователя и разрешите ему запускать службы в фоне:
+   ```bash
+   sudo adduser alexx
+   sudo loginctl enable-linger alexx
+   ```
+   *(`enable-linger` гарантирует, что бот запустится при старте сервера, даже если alexx не авторизован).*
+2. Переключитесь на пользователя `alexx` (или подключитесь по SSH под ним):
+   ```bash
+   su - alexx
+   ```
+3. Склонируйте проект и настройте окружение:
+   ```bash
+   git clone <repository-url> ~/skuch1cloud
+   cd ~/skuch1cloud
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -e .
+   ```
+4. Создайте файл `.env` аналогично пункту 5 из инструкции выше.
+5. Настройте пользовательский systemd:
+   ```bash
+   mkdir -p ~/.config/systemd/user
+   nano ~/.config/systemd/user/skuch1cloud.service
+   ```
+   **Содержимое файла:**
+   ```ini
+   [Unit]
+   Description=skuch1cloud Telegram Bot (User alexx)
+   After=network.target
+
+   [Service]
+   Type=simple
+   WorkingDirectory=%h/skuch1cloud
+   ExecStart=%h/skuch1cloud/.venv/bin/python src/main.py
+   Restart=always
+   RestartSec=10
+
+   [Install]
+   WantedBy=default.target
+   ```
+6. Запустите бота от имени `alexx`:
+   ```bash
+   systemctl --user daemon-reload
+   systemctl --user enable skuch1cloud
+   systemctl --user start skuch1cloud
+   ```
+
+Посмотреть логи работы бота в реальном времени можно командой (для root уберите флаг `--user`):
+```bash
+journalctl --user -u skuch1cloud -f
+```

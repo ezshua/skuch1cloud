@@ -1,0 +1,8 @@
+README.md
+pyproject.toml
+src/main.py
+src/skuch1cloud.egg-info/PKG-INFO
+src/skuch1cloud.egg-info/SOURCES.txt
+src/skuch1cloud.egg-info/dependency_links.txt
+src/skuch1cloud.egg-info/requires.txt
+src/skuch1cloud.egg-info/top_level.txt

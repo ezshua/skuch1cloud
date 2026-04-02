@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: skuch1cloud
+Version: 0.1.0
+Requires-Python: >=3.10
+Requires-Dist: aiogram
+Requires-Dist: python-dotenv

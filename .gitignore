@@ -1,0 +1,8 @@
+﻿# Окружение
+.venv/
+__pycache__/
+
+# Секреты и локальные данные
+.env
+data/
+users_map.json

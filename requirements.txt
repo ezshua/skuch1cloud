@@ -1,0 +1,5 @@
+﻿# Add dependencies here
+
+aiogram>=3.26.0
+python-dotenv>=1.2.2
+
