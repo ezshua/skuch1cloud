@@ -283,7 +283,7 @@ journalctl --user -u skuch1cloud -f
 ```bash
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 ```
- в конце файла ~/.profile
+ в конце файла `~/.profile`
 
 **Правильный способ** — использовать `su` с флагом `-` (или `--login`), который имитирует полноценный вход в систему для пользователя и устанавливает все необходимое окружение.
 
@@ -298,4 +298,4 @@ export XDG_RUNTIME_DIR="/run/user/$(id -u)"
     ```bash
     su - alexx -c "systemctl --user stop skuch1cloud"
     ```
-```
+
