@@ -1,4 +1,4 @@
-﻿﻿# skuch1cloud
+﻿﻿﻿﻿# skuch1cloud
 
 Telegram бот для сохранения файлов и медиа от пользователей.
 
@@ -220,6 +220,55 @@ BOT_DATA_PATH_SIZE=524288000
    systemctl --user enable skuch1cloud
    systemctl --user start skuch1cloud
    ```
+
+### Управление службой (systemd)
+
+После установки службы (как для `root`, так и для пользователя `alexx`), вы можете управлять ею с помощью стандартных команд `systemctl`.
+
+**Примечание:** Для службы, запущенной от имени пользователя `alexx`, ко всем командам `systemctl` необходимо добавлять флаг `--user`. Например: `systemctl --user stop skuch1cloud`.
+
+**Основные команды:**
+
+-   **Остановить службу** (бот перестанет работать, но автозапуск сохранится):
+    ```bash
+    systemctl stop skuch1cloud
+    ```
+
+-   **Запустить службу** (если она была остановлена):
+    ```bash
+    systemctl start skuch1cloud
+    ```
+
+-   **Перезапустить службу** (например, после обновления кода или изменения `.env`):
+    ```bash
+    systemctl restart skuch1cloud
+    ```
+
+-   **Проверить статус службы** (показывает, запущена ли она, и последние логи):
+    ```bash
+    systemctl status skuch1cloud
+    ```
+
+**Управление автозагрузкой:**
+
+-   **Отключить автозапуск** (служба не будет стартовать при перезагрузке сервера):
+    ```bash
+    systemctl disable skuch1cloud
+    ```
+
+-   **Включить автозапуск обратно:**
+    ```bash
+    systemctl enable skuch1cloud
+    ```
+
+**Полное удаление службы:**
+
+Чтобы полностью удалить службу из системы, выполните следующие шаги (не забудьте про флаг `--user` для `alexx`):
+
+1.  Остановите службу: `systemctl stop skuch1cloud`
+2.  Отключите автозапуск: `systemctl disable skuch1cloud`
+3.  Удалите файл службы (для `root`: `rm /etc/systemd/system/skuch1cloud.service`, для `alexx`: `rm ~/.config/systemd/user/skuch1cloud.service`).
+4.  Перезагрузите конфигурацию `systemd`: `systemctl daemon-reload`.
 
 Посмотреть логи работы бота в реальном времени можно командой (для root уберите флаг `--user`):
 ```bash
