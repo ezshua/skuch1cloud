@@ -11,6 +11,7 @@ from file_handler import save_incoming_file, get_user_files
 from utils import format_size, append_file_data, atomic_write_text, get_dir_size
 import json
 from users import ensure_user_dir
+from texts import get_welcome_message
 
 
 def build_dispatcher() -> Dispatcher:
@@ -52,9 +53,8 @@ def build_dispatcher() -> Dispatcher:
         files = get_user_files(user_dir)
         total_size = sum(f.get("size", 0) for f in files)
 
-        await message.answer(
-            f"Привет! Твоя папка: <b>{user_dir.name}</b> ({format_size(total_size)} в {len(files)} файлах)"
-        )
+        welcome_text = get_welcome_message(user_dir.name, format_size(total_size), len(files))
+        await message.answer(welcome_text)
 
     @dp.message(Command("status"))
     async def command_status_handler(message: Message) -> None:
