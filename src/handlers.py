@@ -40,6 +40,15 @@ def build_dispatcher() -> Dispatcher:
                 }
                 append_file_data(files_data_path, file_info)
 
+
+    def _format_date(raw_date: str) -> str:
+        """Форматировать ISO-дату в читаемый вид, вернуть 'неизвестно' при ошибке."""
+        try:
+            return datetime.fromisoformat(raw_date).strftime("%d.%m.%Y %H:%M:%S")
+        except (ValueError, TypeError):
+            return "неизвестно"
+
+
     @dp.message(CommandStart())
     async def command_start_handler(message: Message) -> None:
         """Обработчик команды /start."""
@@ -88,25 +97,27 @@ def build_dispatcher() -> Dispatcher:
         remaining = BOT_TOTAL_DATA_LIMIT - total_all_size
         remaining_str = format_size(max(0, remaining)) if remaining >= 0 else "Лимит превышен"
 
-        response = f"<b>Размер каталога: {format_size(total_user_size)}. Свободно: {remaining_str}</b>\n\n<b>Список файлов:</b>\n\n"
+        header = f"<b>Размер каталога: {format_size(total_user_size)}. Свободно: {remaining_str}</b>\n\n<b>Список файлов:</b>\n\n"
+
+        # Формируем строки по одной и обрезаем по количеству записей, а не символов
+        lines: list[str] = []
+        total_len = len(header)
+        MAX_LEN = 4096
+        truncated = False
         for i, file_info in enumerate(files, 1):
             name = file_info.get("original_name", "Unknown")
             size = format_size(file_info.get("size", 0))
+            date_str = _format_date(file_info.get("upload_date", ""))
+            entry = f"{i}. 📁 <code>{name}</code>\n   📅 {date_str} | 💾 {size}\n\n"
+            if total_len + len(entry) > MAX_LEN:
+                truncated = True
+                break
+            lines.append(entry)
+            total_len += len(entry)
 
-            # Парсим дату и форматируем ее
-            raw_date = file_info.get("upload_date", "")
-            try:
-                date_obj = datetime.fromisoformat(raw_date)
-                date_str = date_obj.strftime("%d.%m.%Y %H:%M:%S")
-            except (ValueError, TypeError):
-                date_str = "неизвестно"
-
-            response += f"{i}. 📁 <code>{name}</code>\n"
-            response += f"   📅 {date_str} | 💾 {size}\n\n"
-
-        # Если сообщение слишком длинное, Telegram может его отклонить.
-        if len(response) > 4096:
-            response = response[:4090] + "..."
+        response = header + "".join(lines)
+        if truncated:
+            response += f"<i>...и ещё {len(files) - len(lines)} файл(ов). Используйте /delete для управления.</i>"
 
         sent_message = await message.answer(response)
         # Сохраняем ID сообщения
@@ -141,12 +152,7 @@ def build_dispatcher() -> Dispatcher:
         pending_deletions[message.from_user.id] = target
         
         size = format_size(target.get("size", 0))
-        raw_date = target.get("upload_date", "")
-        try:
-            date_obj = datetime.fromisoformat(raw_date)
-            date_str = date_obj.strftime("%d.%m.%Y %H:%M:%S")
-        except:
-            date_str = "неизвестно"
+        date_str = _format_date(target.get("upload_date", ""))
 
         await message.answer(
             f"❓ <b>Подтвердите удаление файла:</b>\n\n"
@@ -205,11 +211,11 @@ def build_dispatcher() -> Dispatcher:
                 if duplicate_info:
                     # Форматируем данные о дубликате
                     dup_size = format_size(duplicate_info.get("size", 0))
-                    dup_date = datetime.fromisoformat(duplicate_info.get("upload_date", "")).strftime("%d.%m.%Y %H:%M:%S")
+                    dup_date = _format_date(duplicate_info.get("upload_date", ""))
 
                     # Форматируем данные о новом файле
                     new_size = format_size(file_info.get("size", 0))
-                    new_date = datetime.fromisoformat(file_info.get("upload_date", "")).strftime("%d.%m.%Y %H:%M:%S")
+                    new_date = _format_date(file_info.get("upload_date", ""))
 
                     await message.answer(
                         f"⚠️ Файл с таким именем уже был:\n"
@@ -270,7 +276,7 @@ def build_dispatcher() -> Dispatcher:
                     if prev_status_id:
                         try:
                             await message.bot.delete_message(chat_id=message.chat.id, message_id=prev_status_id)
-                        except:
+                        except Exception:
                             pass
 
                     # Пересканируем (на всякий случай) и выводим статус
@@ -301,6 +307,13 @@ def build_dispatcher() -> Dispatcher:
                         return
                     except Exception as e:
                         logger.error(f"Ошибка при отправке документа: {e}")
+                else:
+                    # Файл есть в списке, но удалён с диска
+                    await message.answer(
+                        f"⚠️ Файл <code>{target['original_name']}</code> не найден на диске.\n"
+                        f"Возможно, он был удалён вручную. Используйте /delete для удаления записи."
+                    )
+                    return
 
         # 3. Если файл не найден или произошла ошибка — обычное эхо
         try:
