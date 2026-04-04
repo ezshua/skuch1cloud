@@ -4,6 +4,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+# Загружаем .env один раз при импорте модуля
+load_dotenv()
+
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
@@ -20,7 +23,6 @@ BOT_TOTAL_DATA_LIMIT = int(os.getenv("BOT_DATA_PATH_SIZE", 500 * 1024 * 1024)) #
 
 def get_bot_token() -> str:
     """Получить токен бота из переменной окружения."""
-    load_dotenv()
     token = os.getenv("BOT_TOKEN")
     if not token:
         raise RuntimeError("Missing BOT_TOKEN env var. Put it into a .env file.")
@@ -29,7 +31,4 @@ def get_bot_token() -> str:
 
 def get_base_path() -> Path:
     """Получить базовый путь для хранения данных бота."""
-    load_dotenv()
     return Path(os.getenv("BOT_DATA_PATH", "data")).resolve()
-
-
