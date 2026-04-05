@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿# skuch1cloud
+﻿﻿# skuch1cloud
 
 Telegram бот для сохранения файлов и медиа от пользователей.
 
@@ -298,4 +298,3 @@ export XDG_RUNTIME_DIR="/run/user/$(id -u)"
     ```bash
     su - alexx -c "systemctl --user stop skuch1cloud"
     ```
-
