@@ -6,3 +6,6 @@ __pycache__/
 .env
 data/
 users_map.json
+RULES.md
+GEMINI.md
+
