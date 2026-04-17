@@ -50,6 +50,24 @@ def build_dispatcher() -> Dispatcher:
             return "неизвестно"
 
 
+    def _wrap_filename(name: str, width: int = 37, indent: str = "      ") -> str:
+        """Разбивает имя файла на части для предотвращения некрасивого переноса в Telegram."""
+        if len(name) <= width:
+            return name
+        # Разбиваем строку на куски по width символов
+        chunks = [name[i:i + width] for i in range(0, len(name), width)]
+        return f"\n{indent}".join(chunks)
+
+
+    def _clean_filename(text: str) -> str:
+        """Убирает технические переносы и отступы, которые бот добавил для красоты при выводе."""
+        # Убираем наши переносы с любым количеством пробелов
+        import re
+        text = re.sub(r"\n\s+", "", text)
+        # Если скопировалось вместе с иконкой "📁", берем только то, что после неё
+        return text.split("📁")[-1].strip()
+
+
     async def _get_status_content(user_dir: Path, page: int = 1):
         """Формирует текст и клавиатуру для команды /status с учетом пагинации."""
         files = get_user_files(user_dir)
@@ -67,7 +85,7 @@ def build_dispatcher() -> Dispatcher:
         base_data_dir = user_dir.parent
         total_all_size = get_dir_size(base_data_dir)
         remaining = BOT_TOTAL_DATA_LIMIT - total_all_size
-        remaining_str = format_size(max(0, remaining)) if remaining >= 0 else "Лимит превышен"
+        remaining_str = format_size(max(0, remaining)) if remaining >= 0 else "<i><u>Лимит превышен</u></i>"
 
         header = (f"<b>Размер каталога: {format_size(total_user_size)}. Свободно: {remaining_str}</b>\n"
                   f"<b>Список файлов (стр. {page}/{total_pages}):</b>\n\n")
@@ -77,7 +95,10 @@ def build_dispatcher() -> Dispatcher:
             name = file_info.get("original_name", "Unknown")
             size = format_size(file_info.get("size", 0))
             date_str = _format_date(file_info.get("upload_date", ""))
-            lines.append(f"{i}. 📁 <code>{name}</code>\n   📅 {date_str} | 💾 {size}\n")
+            prefix = f"{i}. 📁 "
+            # Динамический отступ, чтобы имя во второй строке было ровно под именем в первой
+            wrapped_name = _wrap_filename(name, indent=" " * len(prefix))
+            lines.append(f"<code>{prefix}{wrapped_name}</code>\n   📅 {date_str} | 💾 {size}\n")
 
         response = header + "".join(lines)
 
@@ -167,7 +188,7 @@ def build_dispatcher() -> Dispatcher:
             await message.answer("⚠️ Пожалуйста, укажите имя файла: <code>/delete имя_файла</code>")
             return
 
-        filename = args[1].strip()
+        filename = _clean_filename(args[1])
         user_dir = await ensure_user_dir(message.from_user, create=False)
         if not user_dir:
             await message.answer("Пожалуйста, сначала отправьте /start.")
@@ -188,8 +209,8 @@ def build_dispatcher() -> Dispatcher:
 
         await message.answer(
             f"❓ <b>Подтвердите удаление файла:</b>\n\n"
-            f"📁 <code>{target['original_name']}</code>\n"
-            f"📅 {date_str} | 💾 {size}\n\n"
+            f"<code>📁 {_wrap_filename(target['original_name'], indent='   ')}</code>\n"
+            f"� {date_str} | 💾 {size}\n\n"
             f"Для удаления отправьте: <b>да</b>, <b>yes</b> или <b>так</b>.\n"
             f"Любое другое сообщение или файл отменит удаление."
         )
@@ -251,11 +272,11 @@ def build_dispatcher() -> Dispatcher:
 
                     await message.answer(
                         f"⚠️ Файл с таким именем уже был:\n"
-                        f"📁 <code>{duplicate_info['original_name']}</code>\n"
-                        f"📅 {dup_date} | 💾 {dup_size}\n\n"
+                        f"<code>📁 {_wrap_filename(duplicate_info['original_name'], indent='   ')}</code>\n"
+                        f"� {dup_date} | 💾 {dup_size}\n\n"
                         f"✅ Новый файл сохранен под именем:\n"
-                        f"📁 <code>{file_info['original_name']}</code>\n"
-                        f"📅 {new_date} | 💾 {new_size}"
+                        f"<code>📁 {_wrap_filename(file_info['original_name'], indent='   ')}</code>\n"
+                        f" {new_date} | 💾 {new_size}"
                     )
                 else:
                     await message.answer("Файл сохранен.")
@@ -323,9 +344,10 @@ def build_dispatcher() -> Dispatcher:
         # 2. Пытаемся найти файл по имени в директории пользователя
         user_dir = await ensure_user_dir(message.from_user, create=False)
         if user_dir:
+            cleaned_name = _clean_filename(message.text)
             files_data = get_user_files(user_dir)
             # Ищем точное совпадение имени (оригинального)
-            target = next((f for f in files_data if f.get("original_name") == message.text), None)
+            target = next((f for f in files_data if f.get("original_name") == cleaned_name), None)
 
             if target:
                 file_path = user_dir / target["stored_name"]
