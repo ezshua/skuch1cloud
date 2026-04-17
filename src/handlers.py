@@ -4,7 +4,7 @@ from pathlib import Path
 
 from aiogram import Dispatcher, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, FSInputFile
+from aiogram.types import Message, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
 from config import MAX_FILE_SIZE, BOT_TOTAL_DATA_LIMIT, logger
 from file_handler import save_incoming_file, get_user_files
@@ -20,6 +20,7 @@ def build_dispatcher() -> Dispatcher:
     # Словари для хранения состояния бота
     user_status_msgs: dict[int, int] = {}
     pending_deletions: dict[int, dict] = {}
+    FILES_PER_PAGE = 10
 
 
     async def scan_and_fix_files(user_dir: Path) -> None:
@@ -47,6 +48,47 @@ def build_dispatcher() -> Dispatcher:
             return datetime.fromisoformat(raw_date).strftime("%d.%m.%Y %H:%M:%S")
         except (ValueError, TypeError):
             return "неизвестно"
+
+
+    async def _get_status_content(user_dir: Path, page: int = 1):
+        """Формирует текст и клавиатуру для команды /status с учетом пагинации."""
+        files = get_user_files(user_dir)
+        if not files:
+            return "Вы еще не отправили ни одного файла.", None
+
+        total_pages = (len(files) + FILES_PER_PAGE - 1) // FILES_PER_PAGE
+        page = max(1, min(page, total_pages))
+
+        start_idx = (page - 1) * FILES_PER_PAGE
+        end_idx = start_idx + FILES_PER_PAGE
+        page_files = files[start_idx:end_idx]
+
+        total_user_size = sum(f.get("size", 0) for f in files)
+        base_data_dir = user_dir.parent
+        total_all_size = get_dir_size(base_data_dir)
+        remaining = BOT_TOTAL_DATA_LIMIT - total_all_size
+        remaining_str = format_size(max(0, remaining)) if remaining >= 0 else "Лимит превышен"
+
+        header = (f"<b>Размер каталога: {format_size(total_user_size)}. Свободно: {remaining_str}</b>\n"
+                  f"<b>Список файлов (стр. {page}/{total_pages}):</b>\n\n")
+
+        lines = []
+        for i, file_info in enumerate(page_files, start_idx + 1):
+            name = file_info.get("original_name", "Unknown")
+            size = format_size(file_info.get("size", 0))
+            date_str = _format_date(file_info.get("upload_date", ""))
+            lines.append(f"{i}. 📁 <code>{name}</code>\n   📅 {date_str} | 💾 {size}\n")
+
+        response = header + "".join(lines)
+
+        buttons = []
+        if page > 1:
+            buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"status_page:{page-1}"))
+        if page < total_pages:
+            buttons.append(InlineKeyboardButton(text="Вперед ➡️", callback_data=f"status_page:{page+1}"))
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[buttons]) if buttons else None
+        return response, kb
 
 
     @dp.message(CommandStart())
@@ -85,43 +127,33 @@ def build_dispatcher() -> Dispatcher:
             await message.answer("Пожалуйста, сначала отправьте /start.")
             return
 
-        files = get_user_files(user_dir)
-        if not files:
-            await message.answer("Вы еще не отправили ни одного файла.")
-            return
-
-        # Расчет размеров
-        total_user_size = sum(f.get("size", 0) for f in files)
-        base_data_dir = user_dir.parent
-        total_all_size = get_dir_size(base_data_dir)
-        remaining = BOT_TOTAL_DATA_LIMIT - total_all_size
-        remaining_str = format_size(max(0, remaining)) if remaining >= 0 else "Лимит превышен"
-
-        header = f"<b>Размер каталога: {format_size(total_user_size)}. Свободно: {remaining_str}</b>\n\n<b>Список файлов:</b>\n\n"
-
-        # Формируем строки по одной и обрезаем по количеству записей, а не символов
-        lines: list[str] = []
-        total_len = len(header)
-        MAX_LEN = 4096
-        truncated = False
-        for i, file_info in enumerate(files, 1):
-            name = file_info.get("original_name", "Unknown")
-            size = format_size(file_info.get("size", 0))
-            date_str = _format_date(file_info.get("upload_date", ""))
-            entry = f"{i}. 📁 <code>{name}</code>\n   📅 {date_str} | 💾 {size}\n\n"
-            if total_len + len(entry) > MAX_LEN:
-                truncated = True
-                break
-            lines.append(entry)
-            total_len += len(entry)
-
-        response = header + "".join(lines)
-        if truncated:
-            response += f"<i>...и ещё {len(files) - len(lines)} файл(ов). Используйте /delete для управления.</i>"
-
-        sent_message = await message.answer(response)
+        response, kb = await _get_status_content(user_dir, page=1)
+        sent_message = await message.answer(response, reply_markup=kb)
         # Сохраняем ID сообщения
         user_status_msgs[message.from_user.id] = sent_message.message_id
+
+
+    @dp.callback_query(F.data.startswith("status_page:"))
+    async def status_pagination_handler(callback: CallbackQuery) -> None:
+        """Обработчик переключения страниц в списке файлов."""
+        user_dir = await ensure_user_dir(callback.from_user, create=False)
+        if not user_dir:
+            await callback.answer("Ошибка сессии. Введите /start", show_alert=True)
+            return
+
+        try:
+            page = int(callback.data.split(":")[1])
+        except (IndexError, ValueError):
+            page = 1
+
+        text, kb = await _get_status_content(user_dir, page)
+
+        try:
+            await callback.message.edit_text(text, reply_markup=kb)
+        except Exception:
+            # Ошибка может возникнуть, если сообщение не изменилось
+            pass
+        await callback.answer()
 
 
     @dp.message(Command("delete"))
@@ -129,12 +161,12 @@ def build_dispatcher() -> Dispatcher:
         """Обработчик команды /delete [имя файла]."""
         if not message.from_user:
             return
-        
+
         args = message.text.split(maxsplit=1)
         if len(args) < 2:
             await message.answer("⚠️ Пожалуйста, укажите имя файла: <code>/delete имя_файла</code>")
             return
-        
+
         filename = args[1].strip()
         user_dir = await ensure_user_dir(message.from_user, create=False)
         if not user_dir:
@@ -143,14 +175,14 @@ def build_dispatcher() -> Dispatcher:
 
         files_data = get_user_files(user_dir)
         target = next((f for f in files_data if f.get("original_name") == filename), None)
-        
+
         if not target:
             await message.answer(f"❌ Файл <code>{filename}</code> не найден в вашем списке.")
             return
 
         # Сохраняем состояние ожидания подтверждения
         pending_deletions[message.from_user.id] = target
-        
+
         size = format_size(target.get("size", 0))
         date_str = _format_date(target.get("upload_date", ""))
 
