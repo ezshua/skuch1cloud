@@ -1,6 +1,8 @@
 import json
 import re
 from pathlib import Path
+from datetime import datetime
+from config import LOG_FILE_SIZE_LIMIT
 
 
 def slugify_cyrillic_to_ascii(s: str) -> str:
@@ -27,7 +29,7 @@ def normalize_filename(file_name: str) -> str:
     """Нормализовать имя файла для безопасного сохранения."""
     file_name = file_name.strip().replace("\\", "/").split("/")[-1] or "file.bin"
     file_name = slugify_cyrillic_to_ascii(file_name)
-    
+
     stem, ext = file_name, ""
     if "." in file_name:
         stem, ext = file_name.rsplit(".", 1)
@@ -114,3 +116,25 @@ def append_file_data(files_data_path: Path, file_info: dict) -> None:
     data.append(file_info)
     atomic_write_text(files_data_path, json.dumps(data, ensure_ascii=False, indent=2))
 
+
+def log_user_action(user_dir: Path, action_type: str, details: dict) -> None:
+    """
+    Записать действие в журнал пользователя с контролем размера файла.
+    Если размер файла превышает лимит, удаляет около 2% старых записей.
+    """
+    log_path = user_dir / "action_log.json"
+    data = load_json_list_safe(log_path)
+
+    # Проверка размера и ротация (2% старых записей)
+    if log_path.exists() and log_path.stat().st_size > LOG_FILE_SIZE_LIMIT:
+        if data:
+            remove_count = max(1, len(data) // 50)  # 2% от общего числа записей
+            data = data[remove_count:]
+
+    entry = {
+        "timestamp": datetime.now().isoformat(),
+        "type": action_type,
+        "details": details
+    }
+    data.append(entry)
+    atomic_write_text(log_path, json.dumps(data, ensure_ascii=False, indent=2))

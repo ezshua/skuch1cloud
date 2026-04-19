@@ -8,7 +8,7 @@ from aiogram.types import Message, FSInputFile, InlineKeyboardMarkup, InlineKeyb
 
 from config import MAX_FILE_SIZE, BOT_TOTAL_DATA_LIMIT, logger
 from file_handler import save_incoming_file, get_user_files
-from utils import format_size, append_file_data, atomic_write_text, get_dir_size
+from utils import format_size, append_file_data, atomic_write_text, get_dir_size, log_user_action
 import json
 from users import ensure_user_dir
 from texts import get_welcome_message
@@ -29,9 +29,15 @@ def build_dispatcher() -> Dispatcher:
         existing_data = get_user_files(user_dir)
         stored_names = {f.get("stored_name") for f in existing_data}
 
-        # Получаем все файлы в директории, кроме json
+        # Служебные файлы и временные расширения, которые не должны попасть в индекс
+        excluded_files = {"files_data.json", "action_log.json"}
+        temp_extensions = {".tmp", ".download"}
+
         for file_path in user_dir.iterdir():
-            if file_path.is_file() and file_path.name != "files_data.json" and file_path.name not in stored_names:
+            if (file_path.is_file() and
+                file_path.name not in excluded_files and
+                file_path.suffix not in temp_extensions and
+                file_path.name not in stored_names):
                 # Добавляем файл в список
                 file_info = {
                     "original_name": file_path.name,
@@ -121,12 +127,15 @@ def build_dispatcher() -> Dispatcher:
         # Сканируем при запуске
         await scan_and_fix_files(user_dir)
 
+        log_user_action(user_dir, "user_command", {"command": "/start"})
+
         # Получаем обновленный список файлов
         files = get_user_files(user_dir)
         total_size = sum(f.get("size", 0) for f in files)
 
         welcome_text = get_welcome_message(user_dir.name, format_size(total_size), len(files))
         await message.answer(welcome_text)
+        log_user_action(user_dir, "bot_response", {"type": "welcome"})
 
     @dp.message(Command("status"))
     async def command_status_handler(message: Message) -> None:
@@ -148,10 +157,19 @@ def build_dispatcher() -> Dispatcher:
             await message.answer("Пожалуйста, сначала отправьте /start.")
             return
 
+        log_user_action(user_dir, "user_command", {"command": "/status"})
         response, kb = await _get_status_content(user_dir, page=1)
         sent_message = await message.answer(response, reply_markup=kb)
         # Сохраняем ID сообщения
         user_status_msgs[message.from_user.id] = sent_message.message_id
+
+        files = get_user_files(user_dir)
+        total_size = sum(f.get("size", 0) for f in files)
+        log_user_action(user_dir, "bot_response", {
+            "type": "status_summary",
+            "files_count": len(files),
+            "total_size": format_size(total_size)
+        })
 
 
     @dp.callback_query(F.data.startswith("status_page:"))
@@ -167,6 +185,7 @@ def build_dispatcher() -> Dispatcher:
         except (IndexError, ValueError):
             page = 1
 
+        # log_user_action(user_dir, "user_interaction", {"action": "pagination", "page": page})
         text, kb = await _get_status_content(user_dir, page)
 
         try:
@@ -175,6 +194,15 @@ def build_dispatcher() -> Dispatcher:
             # Ошибка может возникнуть, если сообщение не изменилось
             pass
         await callback.answer()
+
+        # files = get_user_files(user_dir)
+        # total_size = sum(f.get("size", 0) for f in files)
+        # log_user_action(user_dir, "bot_response", {
+        #     "type": "status_summary_pagination",
+        #     "page": page,
+        #     "files_count": len(files),
+        #     "total_size": format_size(total_size)
+        # })
 
 
     @dp.message(Command("delete"))
@@ -193,6 +221,8 @@ def build_dispatcher() -> Dispatcher:
         if not user_dir:
             await message.answer("Пожалуйста, сначала отправьте /start.")
             return
+
+        log_user_action(user_dir, "user_command", {"command": f"/delete {filename}"})
 
         files_data = get_user_files(user_dir)
         target = next((f for f in files_data if f.get("original_name") == filename), None)
@@ -214,6 +244,7 @@ def build_dispatcher() -> Dispatcher:
             f"Для удаления отправьте: <b>да</b>, <b>yes</b> или <b>так</b>.\n"
             f"Любое другое сообщение или файл отменит удаление."
         )
+        log_user_action(user_dir, "bot_response", {"type": "delete_confirmation_request", "file": filename})
 
     @dp.message(F.document | F.audio | F.video | F.voice | F.sticker | F.video_note | F.photo)
     async def incoming_files_handler(message: Message) -> None:
@@ -257,6 +288,7 @@ def build_dispatcher() -> Dispatcher:
             if not user_dir:
                 await message.answer("Пожалуйста, сначала отправьте /start.")
                 return
+            log_user_action(user_dir, "user_upload", {"media_type": type(media_obj).__name__, "size": media_obj.file_size})
 
             try:
                 file_info, duplicate_info = await save_incoming_file(message, None, user_dir)
@@ -278,12 +310,15 @@ def build_dispatcher() -> Dispatcher:
                         f"<code>📁 {_wrap_filename(file_info['original_name'], indent='   ')}</code>\n"
                         f" {new_date} | 💾 {new_size}"
                     )
+                    log_user_action(user_dir, "bot_response", {"type": "file_saved_duplicate", "name": file_info['original_name']})
                 else:
                     await message.answer("Файл сохранен.")
+                    log_user_action(user_dir, "bot_response", {"type": "file_saved", "name": file_info['original_name']})
 
                 # Отправляем сообщение об отмене удаления, если оно было
                 if cancelled_delete_target:
                     await message.answer(f"🚫 Удаление файла <code>{cancelled_delete_target['original_name']}</code> отменено.")
+                    log_user_action(user_dir, "bot_response", {"type": "delete_cancelled_by_media"})
 
             except Exception as e:
                 logger.exception("Ошибка при сохранении файла:")
@@ -292,7 +327,11 @@ def build_dispatcher() -> Dispatcher:
 
         # Если это не медиа-файл, но был pending_deletions, то отменяем и сообщаем
         elif cancelled_delete_target:
-             await message.answer(f"🚫 Удаление файла <code>{cancelled_delete_target['original_name']}</code> отменено.")
+            user_dir = await ensure_user_dir(message.from_user, create=False)
+            if user_dir:
+                 log_user_action(user_dir, "user_action_cancelled_delete", {"reason": "unexpected_media"})
+                 await message.answer(f"🚫 Удаление файла <code>{cancelled_delete_target['original_name']}</code> отменено.")
+                 log_user_action(user_dir, "bot_response", {"type": "delete_cancelled_by_media_generic"})
 
 
     @dp.message(F.text)
@@ -304,11 +343,14 @@ def build_dispatcher() -> Dispatcher:
         user_id = message.from_user.id
         user_text = message.text.strip().lower()
 
+        user_dir = await ensure_user_dir(message.from_user, create=False)
+        if user_dir:
+            log_user_action(user_dir, "user_text", {"text": message.text})
+
         # 1. Проверяем, не является ли сообщение подтверждением удаления
         if user_id in pending_deletions:
             target = pending_deletions.pop(user_id)
             if user_text in ["да", "yes", "так"]:
-                user_dir = await ensure_user_dir(message.from_user, create=False)
                 if user_dir:
                     file_path = user_dir / target["stored_name"]
                     files_data_path = user_dir / "files_data.json"
@@ -323,6 +365,7 @@ def build_dispatcher() -> Dispatcher:
                     atomic_write_text(files_data_path, json.dumps(updated_data, ensure_ascii=False, indent=2))
 
                     await message.answer(f"✅ Файл <code>{target['original_name']}</code> удален.")
+                    log_user_action(user_dir, "bot_response", {"type": "delete_success", "file": target['original_name']})
 
                     # Удаляем старое сообщение статуса и вызываем новый статус
                     prev_status_id = user_status_msgs.pop(user_id, None)
@@ -338,11 +381,12 @@ def build_dispatcher() -> Dispatcher:
                     return # Завершаем обработку после удаления
             else:
                 # Удаление отменено - сообщаем и завершаем обработку
-                await message.answer(f"🚫 Удаление файла <code>{target['original_name']}</code> отменено.")
+                if user_dir:
+                    await message.answer(f"🚫 Удаление файла <code>{target['original_name']}</code> отменено.")
+                    log_user_action(user_dir, "bot_response", {"type": "delete_cancelled_by_text"})
                 return # Завершаем обработку, чтобы не было эхо-ответа
 
         # 2. Пытаемся найти файл по имени в директории пользователя
-        user_dir = await ensure_user_dir(message.from_user, create=False)
         if user_dir:
             cleaned_name = _clean_filename(message.text)
             files_data = get_user_files(user_dir)
@@ -358,6 +402,7 @@ def build_dispatcher() -> Dispatcher:
                             document=FSInputFile(path=file_path, filename=target["original_name"]),
                             caption=f"📁 Файл: {target['original_name']}"
                         )
+                        log_user_action(user_dir, "bot_response", {"type": "send_file", "file": target['original_name']})
                         return
                     except Exception as e:
                         logger.error(f"Ошибка при отправке документа: {e}")
@@ -367,11 +412,14 @@ def build_dispatcher() -> Dispatcher:
                         f"⚠️ Файл <code>{target['original_name']}</code> не найден на диске.\n"
                         f"Возможно, он был удалён вручную. Используйте /delete для удаления записи."
                     )
+                    log_user_action(user_dir, "bot_response", {"type": "file_not_found_on_disk", "file": target['original_name']})
                     return
 
         # 3. Если файл не найден или произошла ошибка — обычное эхо
         try:
             await message.answer(f"📢 <b>Эхо:</b> {message.text}")
+            if user_dir:
+                log_user_action(user_dir, "bot_response", {"type": "echo", "text": message.text})
         except Exception:
             await message.answer("Я принимаю только файлы или имена ваших файлов.")
 
