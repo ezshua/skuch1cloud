@@ -106,18 +106,19 @@ async def save_incoming_file(message: Message, file_name: str | None, destinatio
             original_name = f"{original_name}({time_suffix})"
 
     final_name = normalize_filename(original_name)
-    final_path = unique_path(destination_dir / final_name)
-    tmp_path = final_path.with_suffix(final_path.suffix + ".download")
+    # Используем file_id для временного файла, чтобы избежать конфликтов при одновременной загрузке
+    tmp_path = destination_dir / f"{content.file_id}.download"
 
     try:
         # Гарантируем, что папка пользователя существует на диске перед скачиванием
         destination_dir.mkdir(parents=True, exist_ok=True)
-
         await message.bot.download(content.file_id, destination=tmp_path)
 
         if not tmp_path.exists():
             raise FileNotFoundError(f"Временный файл не найден после загрузки: {tmp_path}")
 
+        # Вычисляем финальный путь только после загрузки, чтобы избежать гонки имен (например, в альбомах)
+        final_path = unique_path(destination_dir / final_name)
         await asyncio.to_thread(shutil.move, str(tmp_path), str(final_path))
 
         file_info = {
