@@ -138,3 +138,18 @@ def log_user_action(user_dir: Path, action_type: str, details: dict) -> None:
     }
     data.append(entry)
     atomic_write_text(log_path, json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def cleanup_temp_files(path: Path) -> None:
+    """
+    Рекурсивно удаляет временные файлы (.tmp, .download) в указанной директории.
+    """
+    temp_extensions = {".tmp", ".download"}
+    if not path.exists():
+        return
+    for entry in path.rglob("*"):
+        if entry.is_file() and entry.suffix in temp_extensions:
+            try:
+                entry.unlink()
+            except Exception:
+                pass

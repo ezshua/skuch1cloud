@@ -14,6 +14,7 @@ from utils import format_size, append_file_data, atomic_write_text, get_dir_size
 import json
 from users import ensure_user_dir
 from texts import get_welcome_message
+from url_handler import download_file_from_url
 
 
 def build_dispatcher() -> Dispatcher:
@@ -36,10 +37,18 @@ def build_dispatcher() -> Dispatcher:
         temp_extensions = {".tmp", ".download"}
 
         for file_path in user_dir.iterdir():
-            if (file_path.is_file() and
-                file_path.name not in excluded_files and
-                file_path.suffix not in temp_extensions and
-                file_path.name not in stored_names):
+            if not file_path.is_file():
+                continue
+
+            # Удаляем временные файлы, если они остались от предыдущих прерванных сессий
+            if file_path.suffix in temp_extensions:
+                try:
+                    file_path.unlink()
+                except Exception:
+                    pass
+                continue
+
+            if (file_path.name not in excluded_files and file_path.name not in stored_names):
                 # Добавляем файл в список
                 file_info = {
                     "original_name": file_path.name,
@@ -400,7 +409,31 @@ def build_dispatcher() -> Dispatcher:
                     log_user_action(user_dir, "bot_response", {"type": "delete_cancelled_by_text"})
                 return # Завершаем обработку, чтобы не было эхо-ответа
 
-        # 2. Пытаемся найти файл по имени в директории пользователя
+        # 2. Проверяем, не является ли текст ссылкой для скачивания
+        if user_text.startswith(("http://", "https://")):
+            if not user_dir:
+                await message.answer("Пожалуйста, сначала отправьте /start.")
+                return
+
+            status_msg = await message.answer("⏳ Скачиваю файл по ссылке...")
+            try:
+                file_info = await download_file_from_url(message.text.strip(), user_dir)
+
+                await status_msg.edit_text(
+                    f"✅ Файл успешно скачан и сохранен!\n\n"
+                    f"📁 <b>Имя:</b> <code>{file_info['original_name']}</code>\n"
+                    f"💾 <b>Размер:</b> {format_size(file_info['size'])}"
+                )
+                log_user_action(user_dir, "url_download_success", {"url": message.text, "file": file_info['original_name']})
+                return
+            except (PermissionError, ValueError) as e:
+                await status_msg.edit_text(f"⚠️ {e}")
+                return
+            except Exception as e:
+                await status_msg.edit_text(f"❌ Произошла ошибка при скачивании: {type(e).__name__}")
+                return
+
+        # 3. Пытаемся найти файл по имени в директории пользователя
         if user_dir:
             cleaned_name = _clean_filename(message.text)
             files_data = get_user_files(user_dir)

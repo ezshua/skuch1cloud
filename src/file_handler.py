@@ -112,7 +112,13 @@ async def save_incoming_file(message: Message, file_name: str | None, destinatio
     try:
         # Гарантируем, что папка пользователя существует на диске перед скачиванием
         destination_dir.mkdir(parents=True, exist_ok=True)
-        await message.bot.download(content.file_id, destination=tmp_path)
+
+        # Ограничиваем время скачивания из Telegram (например, 2 минуты)
+        try:
+            await asyncio.wait_for(message.bot.download(content.file_id, destination=tmp_path), timeout=120)
+        except asyncio.TimeoutError:
+            # Выбрасываем OSError, так как он уже красиво обрабатывается в handlers.py
+            raise OSError("Загрузка файла из Telegram заняла слишком много времени (тайм-аут).")
 
         if not tmp_path.exists():
             raise FileNotFoundError(f"Временный файл не найден после загрузки: {tmp_path}")
