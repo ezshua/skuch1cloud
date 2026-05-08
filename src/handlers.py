@@ -1,4 +1,6 @@
 import logging
+import re
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -66,12 +68,19 @@ def build_dispatcher() -> Dispatcher:
 
 
     def _clean_filename(text: str) -> str:
-        """Убирает технические переносы и отступы, которые бот добавил для красоты при выводе."""
-        # Убираем наши переносы с любым количеством пробелов
-        import re
-        text = re.sub(r"\n\s+", "", text)
+        """Нормализует имя файла для сравнения: NFKC, удаление невидимых символов и пробелов."""
         # Если скопировалось вместе с иконкой "📁", берем только то, что после неё
-        return text.split("📁")[-1].strip()
+        if "📁" in text:
+            text = text.split("📁")[-1]
+
+        # Нормализация Unicode (совмещает символы и их модификаторы в одну форму)
+        text = unicodedata.normalize('NFKC', text)
+
+        # Удаляем невидимые символы: вариаторы (\ufe00-\ufe0f), ZWSP (\u200b), мягкие переносы (\u00ad) и др.
+        text = re.sub(r'[\u00ad\u200b-\u200d\ufeff\ufe00-\ufe0f]', '', text)
+
+        # Удаляем все пробелы, табы и переносы строк, приводим к нижнему регистру.
+        return "".join(text.split()).lower()
 
 
     async def _get_status_content(user_dir: Path, page: int = 1):
@@ -225,7 +234,7 @@ def build_dispatcher() -> Dispatcher:
         log_user_action(user_dir, "user_command", {"command": f"/delete {filename}"})
 
         files_data = get_user_files(user_dir)
-        target = next((f for f in files_data if f.get("original_name") == filename), None)
+        target = next((f for f in files_data if _clean_filename(f.get("original_name", "")) == filename), None)
 
         if not target:
             await message.answer(f"❌ Файл <code>{filename}</code> не найден в вашем списке.")
@@ -285,7 +294,7 @@ def build_dispatcher() -> Dispatcher:
                 return
 
             user_dir = await ensure_user_dir(message.from_user, create=False)
-            if not user_dir:
+            if not user_dir or not user_dir.exists():
                 await message.answer("Пожалуйста, сначала отправьте /start.")
                 return
             log_user_action(user_dir, "user_upload", {"media_type": type(media_obj).__name__, "size": media_obj.file_size})
@@ -320,6 +329,10 @@ def build_dispatcher() -> Dispatcher:
                     await message.answer(f"🚫 Удаление файла <code>{cancelled_delete_target['original_name']}</code> отменено.")
                     log_user_action(user_dir, "bot_response", {"type": "delete_cancelled_by_media"})
 
+            except (PermissionError, OSError) as e:
+                # Вывод понятного сообщения пользователю при проблемах с местом
+                await message.answer(f"⚠️ {e}")
+                log_user_action(user_dir, "bot_response", {"type": "storage_error", "details": str(e)})
             except Exception as e:
                 logger.exception("Ошибка при сохранении файла:")
                 await message.answer(f"⚠️ Ошибка при сохранении: {type(e).__name__}: {e}")
@@ -391,7 +404,7 @@ def build_dispatcher() -> Dispatcher:
             cleaned_name = _clean_filename(message.text)
             files_data = get_user_files(user_dir)
             # Ищем точное совпадение имени (оригинального)
-            target = next((f for f in files_data if f.get("original_name") == cleaned_name), None)
+            target = next((f for f in files_data if _clean_filename(f.get("original_name", "")) == cleaned_name), None)
 
             if target:
                 file_path = user_dir / target["stored_name"]
