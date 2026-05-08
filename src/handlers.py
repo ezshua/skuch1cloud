@@ -321,7 +321,8 @@ def build_dispatcher() -> Dispatcher:
                     )
                     log_user_action(user_dir, "bot_response", {"type": "file_saved_duplicate", "name": file_info['original_name']})
                 else:
-                    await message.answer("Файл сохранен.")
+                    # Добавляем размер сохраненного файла
+                    await message.answer(f"✅ Файл сохранен. 💾{format_size(file_info['size'])}")
                     log_user_action(user_dir, "bot_response", {"type": "file_saved", "name": file_info['original_name']})
 
                 # Отправляем сообщение об отмене удаления, если оно было
