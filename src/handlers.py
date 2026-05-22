@@ -235,7 +235,7 @@ def build_dispatcher() -> Dispatcher:
                 return
             elif subcommand == "users":
                 report = collect_users_summary(base_path)
-                await message.answer(report or "👥 Информация о пользователям не найдена.")
+                await message.answer(report or "👥 Информация о пользователях не найдена.")
                 return
 
         # Стандартное поведение (без аргументов или неизвестный аргумент) — отчет по активности
