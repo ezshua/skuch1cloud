@@ -11,7 +11,7 @@ from aiogram.types import Message, FSInputFile, InlineKeyboardMarkup, InlineKeyb
 from config import MAX_FILE_SIZE, BOT_TOTAL_DATA_LIMIT, ADMIN_ID, logger, get_base_path
 from file_handler import save_incoming_file, get_user_files
 from utils import (
-    format_size, append_file_data, atomic_write_text, get_dir_size,
+    format_size, append_file_data, atomic_write_text, get_dir_size, collect_users_summary,
     log_user_action, load_json_safe, collect_daily_report
 )
 import json
@@ -219,23 +219,31 @@ def build_dispatcher() -> Dispatcher:
         base_path = get_base_path()
         state_path = base_path / "bot_state.json"
 
-        if len(args) > 1 and args[1].lower() == "daily":
-            state = load_json_safe(state_path)
-            # По умолчанию True (включено), так как это было стандартное поведение
-            is_enabled = state.get("daily_report_enabled", True)
-            new_state = not is_enabled
-            state["daily_report_enabled"] = new_state
+        if len(args) > 1:
+            subcommand = args[1].lower()
+            if subcommand == "daily":
+                state = load_json_safe(state_path)
+                # По умолчанию True (включено), так как это было стандартное поведение
+                is_enabled = state.get("daily_report_enabled", True)
+                new_state = not is_enabled
+                state["daily_report_enabled"] = new_state
 
-            atomic_write_text(state_path, json.dumps(state, ensure_ascii=False, indent=2))
+                atomic_write_text(state_path, json.dumps(state, ensure_ascii=False, indent=2))
 
-            status = "включена" if new_state else "отключена"
-            await message.answer(f"📅 Ежедневная рассылка отчетов в полночь <b>{status}</b>.")
+                status = "включена" if new_state else "отключена"
+                await message.answer(f"📅 Ежедневная рассылка отчетов в полночь <b>{status}</b>.")
+                return
+            elif subcommand == "users":
+                report = collect_users_summary(base_path)
+                await message.answer(report or "👥 Информация о пользователям не найдена.")
+                return
+
+        # Стандартное поведение (без аргументов или неизвестный аргумент) — отчет по активности
+        report = collect_daily_report(base_path)
+        if report:
+            await message.answer(report)
         else:
-            report = collect_daily_report(base_path)
-            if report:
-                await message.answer(report)
-            else:
-                await message.answer("📊 Активности за последние 24 часа не обнаружено.")
+            await message.answer("📊 Активности за последние 24 часа не обнаружено.")
 
 
 

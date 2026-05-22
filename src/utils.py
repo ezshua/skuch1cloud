@@ -206,3 +206,35 @@ def collect_daily_report(base_path: Path) -> str:
         return "📊 Активности за прошедшие сутки не зафиксировано."
 
     return "\n".join(report_lines)
+
+
+def collect_users_summary(base_path: Path) -> str:
+    """
+    Собирает общую статистику по всем пользователям: кол-во файлов и физический объем папок.
+    """
+    users_map_path = base_path / "users_map.json"
+    if not users_map_path.exists():
+        return ""
+
+    mapping = load_json_safe(users_map_path)
+    if not mapping:
+        return ""
+
+    report_lines = ["👥 <b>Сводка по пользователям:</b>"]
+
+    # Сортируем пользователей по имени/логину для удобства чтения
+    for label in sorted(mapping.keys(), key=lambda s: s.lower()):
+        data = mapping[label]
+        dir_name = data["dir"] if isinstance(data, dict) else data
+        user_dir = base_path / dir_name
+
+        if not user_dir.exists():
+            continue
+
+        files_data = load_json_list_safe(user_dir / "files_data.json")
+        count = len(files_data)
+        size = get_dir_size(user_dir)
+
+        report_lines.append(f"👤 {label}: 📁 {count} шт. | 💾 {format_size(size)}")
+
+    return "\n".join(report_lines) if len(report_lines) > 1 else ""
