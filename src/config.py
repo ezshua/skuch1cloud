@@ -4,15 +4,82 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Загружаем .env один раз при импорте модуля
-load_dotenv()
-
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+def _ensure_env_populated():
+    """
+    Проверяет наличие переменных в .env и добавляет недостающие из .env.defaults.
+    """
+    env_path = Path(".env")
+    defaults_path = Path(".env.defaults")
+
+    # Если файла с дефолтами нет, мы не можем ничего проверить
+    if not defaults_path.exists():
+        logger.warning(f"Файл значений по умолчанию {defaults_path} не найден.")
+        return
+
+    # Создаем .env, если он отсутствует
+    if not env_path.exists():
+        env_path.touch()
+        logger.info("Создан новый файл .env")
+
+    # Читаем текущие ключи из .env
+    env_lines = env_path.read_text(encoding="utf-8").splitlines()
+    existing_keys = set()
+    for line in env_lines:
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key = line.split("=", 1)[0].strip()
+            existing_keys.add(key)
+
+    # Читаем эталонные значения
+    default_lines = defaults_path.read_text(encoding="utf-8").splitlines()
+
+    entries_to_add = []
+    current_comments = []
+
+    for line in default_lines:
+        stripped = line.strip()
+
+        if not stripped:
+            # Пустая строка сбрасывает накопленные комментарии.
+            # Это работает и для отступа перед переменной, и для разрывов между комментариями.
+            current_comments = []
+            continue
+
+        if stripped.startswith("#"):
+            current_comments.append(line)
+        elif "=" in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            if key not in existing_keys:
+                entries_to_add.extend(current_comments)
+                entries_to_add.append(line)
+            current_comments = []
+        else:
+            # Любая другая строка (не коммент и не переменная) также прерывает контекст
+            current_comments = []
+
+    # Добавляем недостающие переменные по одной
+    if entries_to_add:
+        with env_path.open("a", encoding="utf-8") as f:
+            # Обеспечиваем отступ от текущего содержимого
+            if env_path.stat().st_size > 0:
+                f.write("\n\n")
+
+            for entry in entries_to_add:
+                f.write(f"{entry}\n")
+                # Логируем только добавление самой переменной, а не комментариев
+                if "=" in entry and not entry.strip().startswith("#"):
+                    logger.info(f"В .env добавлена переменная: {entry.split('=', 1)[0].strip()}")
+
+# Инициализируем окружение перед загрузкой
+_ensure_env_populated()
+load_dotenv()
 
 # Константы (загружаются из .env)
 MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", 20 * 1024 * 1024)) # Лимит Telegram на скачивание файлов для ботов (по умолчанию 20 МБ)
