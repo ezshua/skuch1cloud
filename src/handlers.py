@@ -175,7 +175,7 @@ def build_dispatcher() -> Dispatcher:
         welcome_text = get_welcome_message(user_dir.name, format_size(total_size), len(files))
         await message.answer(welcome_text)
 
-        await notify_admin(message.bot, f"👤 Пользователь {message.from_user.full_name} (@{message.from_user.username}) запустил бота.")
+        await notify_admin(message.bot, f"👤 Пользователь {message.from_user.full_name} (@{message.from_user.username}) подключился.")
         log_user_action(user_dir, "bot_response", {"type": "welcome"})
 
     @dp.message(Command("status"))

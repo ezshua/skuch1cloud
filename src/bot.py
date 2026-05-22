@@ -5,7 +5,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 from config import get_bot_token, get_base_path, ADMIN_ID, logger
-from handlers import build_dispatcher
+from handlers import build_dispatcher, notify_admin
 from utils import cleanup_temp_files, collect_daily_report, load_json_safe
 
 
@@ -45,5 +45,8 @@ async def run_polling() -> None:
 
     # Запускаем фоновую задачу отчета
     asyncio.create_task(daily_report_task(bot))
+
+    # Уведомляем администратора о запуске
+    await notify_admin(bot, "🚀 Бот успешно запущен и готов к работе на сервере.")
 
     await dp.start_polling(bot)
