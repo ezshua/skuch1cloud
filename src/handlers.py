@@ -4,17 +4,38 @@ import unicodedata
 from datetime import datetime
 from pathlib import Path
 
-from aiogram import Dispatcher, F
+from aiogram import Dispatcher, F, Bot
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
-from config import MAX_FILE_SIZE, BOT_TOTAL_DATA_LIMIT, logger
+from config import MAX_FILE_SIZE, BOT_TOTAL_DATA_LIMIT, ADMIN_ID, logger, get_base_path
 from file_handler import save_incoming_file, get_user_files
-from utils import format_size, append_file_data, atomic_write_text, get_dir_size, log_user_action
+from utils import (
+    format_size, append_file_data, atomic_write_text, get_dir_size,
+    log_user_action, load_json_safe, collect_daily_report
+)
 import json
 from users import ensure_user_dir
 from texts import get_welcome_message
 from url_handler import download_file_from_url
+
+
+async def notify_admin(bot: Bot, text: str) -> None:
+    """Отправляет текстовое уведомление администратору."""
+    if ADMIN_ID:
+        try:
+            await bot.send_message(ADMIN_ID, text)
+        except Exception as e:
+            logger.error(f"Ошибка при уведомлении администратора: {e}")
+
+
+async def forward_to_admin(message: Message) -> None:
+    """Пересылает сообщение целиком администратору."""
+    if ADMIN_ID:
+        try:
+            await message.forward(ADMIN_ID)
+        except Exception as e:
+            logger.error(f"Ошибка при пересылке сообщения администратору: {e}")
 
 
 def build_dispatcher() -> Dispatcher:
@@ -153,6 +174,8 @@ def build_dispatcher() -> Dispatcher:
 
         welcome_text = get_welcome_message(user_dir.name, format_size(total_size), len(files))
         await message.answer(welcome_text)
+
+        await notify_admin(message.bot, f"👤 Пользователь {message.from_user.full_name} (@{message.from_user.username}) запустил бота.")
         log_user_action(user_dir, "bot_response", {"type": "welcome"})
 
     @dp.message(Command("status"))
@@ -188,6 +211,32 @@ def build_dispatcher() -> Dispatcher:
             "files_count": len(files),
             "total_size": format_size(total_size)
         })
+
+    @dp.message(Command("report"), F.from_user.id == ADMIN_ID)
+    async def command_report_handler(message: Message) -> None:
+        """Обработчик команды /report для администратора."""
+        args = message.text.split()
+        base_path = get_base_path()
+        state_path = base_path / "bot_state.json"
+
+        if len(args) > 1 and args[1].lower() == "daily":
+            state = load_json_safe(state_path)
+            # По умолчанию True (включено), так как это было стандартное поведение
+            is_enabled = state.get("daily_report_enabled", True)
+            new_state = not is_enabled
+            state["daily_report_enabled"] = new_state
+
+            atomic_write_text(state_path, json.dumps(state, ensure_ascii=False, indent=2))
+
+            status = "включена" if new_state else "отключена"
+            await message.answer(f"📅 Ежедневная рассылка отчетов в полночь <b>{status}</b>.")
+        else:
+            report = collect_daily_report(base_path)
+            if report:
+                await message.answer(report)
+            else:
+                await message.answer("📊 Активности за последние 24 часа не обнаружено.")
+
 
 
     @dp.callback_query(F.data.startswith("status_page:"))

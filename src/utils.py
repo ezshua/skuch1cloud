@@ -1,7 +1,7 @@
 import json
 import re
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from config import LOG_FILE_SIZE_LIMIT
 
 
@@ -153,3 +153,56 @@ def cleanup_temp_files(path: Path) -> None:
                 entry.unlink()
             except Exception:
                 pass
+
+
+def collect_daily_report(base_path: Path) -> str:
+    """
+    Собирает статистику активности всех пользователей за последние 24 часа.
+    """
+    users_map_path = base_path / "users_map.json"
+    if not users_map_path.exists():
+        return ""
+
+    mapping = load_json_safe(users_map_path)
+    if not mapping:
+        return ""
+
+    report_lines = ["📊 <b>Ежедневный отчет по активности</b>"]
+    total_active = 0
+
+    now = datetime.now()
+    yesterday = now - timedelta(days=1)
+
+    for user_label, data in mapping.items():
+        dir_name = data["dir"] if isinstance(data, dict) else data
+        user_dir = base_path / dir_name
+
+        # Проверяем наличие активности в логе за последние сутки
+        log_path = user_dir / "action_log.json"
+        actions = load_json_list_safe(log_path)
+
+        # Очищаем tzinfo для безопасного сравнения с наивным yesterday
+        recent_actions = [a for a in actions if datetime.fromisoformat(a["timestamp"]).replace(tzinfo=None) > yesterday]
+
+        if not recent_actions:
+            continue
+
+        total_active += 1
+
+        # Считаем только новые файлы за сутки из индекса
+        files_data = load_json_list_safe(user_dir / "files_data.json")
+        # Аналогично очищаем tzinfo, так как старые записи могли быть сохранены с часовым поясом
+        daily_files = [
+            f for f in files_data
+            if datetime.fromisoformat(f["upload_date"]).replace(tzinfo=None) > yesterday
+        ]
+
+        count = len(daily_files)
+        size = sum(f.get("size", 0) for f in daily_files)
+
+        report_lines.append(f"👤 {user_label}: 🆕 {count} шт. | 💾 {format_size(size)}")
+
+    if total_active == 0:
+        return "📊 Активности за прошедшие сутки не зафиксировано."
+
+    return "\n".join(report_lines)

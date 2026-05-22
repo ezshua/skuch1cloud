@@ -1,5 +1,6 @@
 import asyncio
 import shutil
+from datetime import datetime
 from pathlib import Path
 
 from aiogram.types import Message, MessageOriginUser, MessageOriginChat, MessageOriginChannel, MessageOriginHiddenUser
@@ -130,7 +131,7 @@ async def save_incoming_file(message: Message, file_name: str | None, destinatio
         file_info = {
             "original_name": original_name,
             "stored_name": final_path.name,
-            "upload_date": message.date.isoformat(),  # ISO формат для удобства хранения
+            "upload_date": datetime.now().isoformat(),  # Используем локальное наивное время для консистентности
             "size": file_size
         }
         append_file_data(destination_dir / "files_data.json", file_info)
