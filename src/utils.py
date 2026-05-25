@@ -199,8 +199,22 @@ def collect_daily_report(base_path: Path) -> str:
 
         count = len(daily_files)
         size = sum(f.get("size", 0) for f in daily_files)
+        total_size = get_dir_size(user_dir)
 
-        report_lines.append(f"👤 {user_label}: 🆕 {count} шт. | 💾 {format_size(size)}")
+        # Считаем только те сообщения, на которые бот ответил в режиме "эхо"
+        echo_count = 0
+        echo_chars = 0
+        for action in recent_actions:
+            details = action.get("details", {})
+            if action.get("type") == "bot_response" and details.get("type") == "echo":
+                echo_count += 1
+                echo_chars += len(str(details.get("text", "")))
+
+        user_row = f"👤 {user_label}: 🆕 {count} шт. | 💾 {format_size(size)} / {format_size(total_size)}"
+        if echo_count > 0:
+            user_row += f" | 💬 Эхо: {echo_count} ({echo_chars} симв.)"
+
+        report_lines.append(user_row)
 
     if total_active == 0:
         return "📊 Активности за прошедшие сутки не зафиксировано."
