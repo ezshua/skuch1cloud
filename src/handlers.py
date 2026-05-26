@@ -467,21 +467,38 @@ def build_dispatcher() -> Dispatcher:
                 return # Завершаем обработку, чтобы не было эхо-ответа
 
         # 2. Проверяем, не является ли текст ссылкой для скачивания
-        if user_text.startswith(("http://", "https://")):
+        url = None
+        # Пытаемся найти ссылку через сущности Telegram (самый точный метод)
+        if message.entities:
+            for entity in message.entities:
+                if entity.type == "url":
+                    url = message.text[entity.offset : entity.offset + entity.length]
+                    break
+                elif entity.type == "text_link":
+                    url = entity.url
+                    break
+
+        # Если сущности не дали результата, используем регулярное выражение
+        if not url:
+            url_match = re.search(r'(https?://[^\s]+)', message.text)
+            if url_match:
+                url = url_match.group(1)
+
+        if url:
             if not user_dir:
                 await message.answer("Пожалуйста, сначала отправьте /start.")
                 return
 
             status_msg = await message.answer("⏳ Скачиваю файл по ссылке...")
             try:
-                file_info = await download_file_from_url(message.text.strip(), user_dir)
+                file_info = await download_file_from_url(url, user_dir)
 
                 await status_msg.edit_text(
                     f"✅ Файл успешно скачан и сохранен!\n\n"
                     f"📁 <b>Имя:</b> <code>{file_info['original_name']}</code>\n"
                     f"💾 <b>Размер:</b> {format_size(file_info['size'])}"
                 )
-                log_user_action(user_dir, "url_download_success", {"url": message.text, "file": file_info['original_name']})
+                log_user_action(user_dir, "url_download_success", {"url": url, "file": file_info['original_name']})
                 return
             except (PermissionError, ValueError) as e:
                 await status_msg.edit_text(f"⚠️ {e}")

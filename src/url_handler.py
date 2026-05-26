@@ -4,12 +4,25 @@ import shutil
 import re
 from pathlib import Path
 from datetime import datetime
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, unquote, urljoin
 
 from config import MAX_FILE_SIZE, BOT_TOTAL_DATA_LIMIT, logger
 from utils import normalize_filename, unique_path, append_file_data, format_size, get_dir_size
 
-async def download_file_from_url(url: str, destination_dir: Path) -> dict:
+def extract_og_image(html_text: str) -> str | None:
+    """Извлечь URL изображения из мета-тегов Open Graph."""
+    # Ищем og:image, поддерживая разные варианты атрибутов (property или name) и порядок
+    patterns = [
+        r'<meta[^>]+(?:property|name)=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']og:image["\']'
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, html_text, re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return None
+
+async def download_file_from_url(url: str, destination_dir: Path, is_retry: bool = False) -> dict:
     """
     Скачивает файл по ссылке и сохраняет его в директорию пользователя.
 
@@ -41,8 +54,20 @@ async def download_file_from_url(url: str, destination_dir: Path) -> dict:
                 # Проверка типа контента: если это HTML, значит ссылка ведет на страницу или каталог
                 content_type = response.headers.get('Content-Type', '').lower()
                 if 'text/html' in content_type:
-                    raise ValueError("Указанная ссылка ведет на веб-страницу или каталог, а не на прямой файл. "
-                                     "Пожалуйста, предоставьте прямую ссылку на скачивание.")
+                    if is_retry:
+                        raise ValueError("Не удалось найти файл по ссылке (даже в превью страницы).")
+
+                    # Пытаемся вытащить картинку из превью
+                    html_text = await response.text(errors='ignore')
+                    preview_url = extract_og_image(html_text)
+
+                    if preview_url:
+                        # Превращаем относительную ссылку в абсолютную
+                        full_preview_url = urljoin(url, preview_url)
+                        return await download_file_from_url(full_preview_url, destination_dir, is_retry=True)
+                    else:
+                        raise ValueError("Указанная ссылка ведет на веб-страницу без превью-изображения. "
+                                         "Пожалуйста, предоставьте прямую ссылку на скачивание.")
 
                 # 1. Предварительная проверка размера по заголовкам
                 content_length = response.headers.get('Content-Length')
