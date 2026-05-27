@@ -57,15 +57,17 @@ def _generate_display_name(original_name: str, extension: str, metadata: dict, m
     if metadata["forward_from"]:
         prefix = "fwd_"
 
-    # Приоритет: подпись (caption), затем оригинальное имя файла
-    base_name = metadata["caption"] or original_name
+    # Приоритет: подпись (caption), затем оригинальное имя файла (без расширения)
+    if metadata["caption"]:
+        base_name = metadata["caption"]
+    elif original_name:
+        # Извлекаем только имя файла без расширения для чистого отображения
+        base_name = Path(original_name).stem
+    else:
+        # Если имени нет, используем дату и ID без расширения
+        base_name = f"{message.date.strftime('%Y%m%d_%H%M%S')}_{message.message_id}"
 
-    if not base_name:
-        timestamp = message.date.strftime("%Y%m%d_%H%M%S")
-        base_name = f"{timestamp}_{message.message_id}{extension}"
-    elif extension and not base_name.lower().endswith(extension.lower()):
-        # Добавляем расширение, если оно отсутствует (например, если взято из caption)
-        base_name += extension
+    # В отображаемом имени расширение скрываем. Тип файла понятен по иконке в списке.
 
     display_name = shorten_name(f"{prefix}{base_name}", MAX_DISPLAY_NAME_LEN, existing_names)
     return display_name
@@ -97,6 +99,13 @@ async def save_incoming_file(message: Message, file_name: str | None, destinatio
         content, extension = message.video_note, ".mp4"
     elif message.photo:
         content, extension = max(message.photo, key=lambda p: (p.file_size or 0)), ".jpg"
+
+    # Пытаемся уточнить расширение из оригинального имени файла, если оно известно.
+    # Это предотвращает появление двойных расширений (например, .ogg.mp3).
+    if original_name and "." in original_name:
+        detected_ext = Path(original_name).suffix.lower()
+        if detected_ext:
+            extension = detected_ext
 
     if not content:
         return {}, None

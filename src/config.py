@@ -94,7 +94,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ACCOUNT_ID", 0)) # ID администратор
 FILE_ICONS = {
     "image": "🖼️",
     "video": "🎬",
-    "audio": "🎵",
+    "audio": "🎧",
     "archive": "📦",
     "document": "📄",
     "folder": "📁"  # Общая иконка или папка

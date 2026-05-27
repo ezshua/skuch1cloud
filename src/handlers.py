@@ -106,7 +106,7 @@ def build_dispatcher() -> Dispatcher:
                     clean_base = clean_base[len(m.group(0)):]
 
                 # Генерируем уникальное сокращенное имя (не более MAX_DISPLAY_NAME_LEN)
-                new_display_name = shorten_name(f"fnd_{clean_base}{file_path.suffix}", MAX_DISPLAY_NAME_LEN, seen_visual_names)
+                new_display_name = shorten_name(f"fnd_{clean_base}", MAX_DISPLAY_NAME_LEN, seen_visual_names)
                 seen_visual_names.append(new_display_name)
 
                 # Добавляем файл в список
