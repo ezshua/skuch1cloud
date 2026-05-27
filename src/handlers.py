@@ -390,6 +390,10 @@ def build_dispatcher() -> Dispatcher:
 
         log_user_action(user_dir, "user_command", {"command": f"/delete {filename}"})
 
+        if not filename:
+            await message.answer("❌ Указанное имя содержит только спецсимволы и не может быть использовано для поиска.")
+            return
+
         files_data = get_user_files(user_dir)
         # Сначала ищем точное совпадение очищенных имен (для уникальности)
         targets = [f for f in files_data if _clean_filename(f.get("original_name", "")) == filename]
@@ -630,13 +634,15 @@ def build_dispatcher() -> Dispatcher:
 
         # 3. Пытаемся найти файл по имени в директории пользователя
         if user_dir:
+            targets = []
             cleaned_name = _clean_filename(message.text)
-            files_data = get_user_files(user_dir)
-            # 1. Сначала ищем точное совпадение (приоритет уникальности)
-            targets = [f for f in files_data if _clean_filename(f.get("original_name", "")) == cleaned_name]
-            if not targets:
-                # 2. Если точного нет, ищем вхождения (подстроку)
-                targets = [f for f in files_data if cleaned_name in _clean_filename(f.get("original_name", ""))]
+            if cleaned_name:
+                files_data = get_user_files(user_dir)
+                # 1. Сначала ищем точное совпадение (приоритет уникальности)
+                targets = [f for f in files_data if _clean_filename(f.get("original_name", "")) == cleaned_name]
+                if not targets:
+                    # 2. Если точного нет, ищем вхождения (подстроку)
+                    targets = [f for f in files_data if cleaned_name in _clean_filename(f.get("original_name", ""))]
 
             if targets:
                 for target in targets:
