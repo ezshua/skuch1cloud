@@ -51,27 +51,44 @@ def build_dispatcher() -> Dispatcher:
         """
         Синхронизирует индекс файлов с реальным содержимым папки:
         1. Удаляет записи о файлах, которые физически отсутствуют.
-        2. Добавляет новые файлы, найденные в директории.
+        2. Проверяет и исправляет отображаемые имена существующих записей (длина и уникальность).
+        3. Добавляет новые файлы, найденные в директории.
         """
         files_data_path = user_dir / "files_data.json"
         existing_data = get_user_files(user_dir)
 
-        # 1. Очистка: оставляем только те записи, файлы которых реально существуют на диске
-        updated_data = [f for f in existing_data if f.get("stored_name") and (user_dir / f["stored_name"]).exists()]
-        if len(updated_data) != len(existing_data):
-            atomic_write_text(files_data_path, json.dumps(updated_data, ensure_ascii=False, indent=2))
+        updated_data = []
+        seen_visual_names = []
+        data_changed = False
+
+        # 1 & 2. Очистка и исправление имен (display names) для уже известных файлов
+        for file_info in existing_data:
+            stored_name = file_info.get("stored_name")
+            if not stored_name or not (user_dir / stored_name).exists():
+                data_changed = True
+                continue
+
+            old_display_name = file_info.get("original_name", "")
+
+            # Для существующих записей проверяем только длину и уникальность.
+            # Не навязываем префиксы, если их нет, просто приводим к лимиту.
+            new_name = shorten_name(old_display_name, MAX_DISPLAY_NAME_LEN, seen_visual_names)
+            if new_name != old_display_name:
+                file_info["original_name"] = new_name
+                data_changed = True
+
+            updated_data.append(file_info)
+            seen_visual_names.append(file_info["original_name"])
 
         stored_names = {f.get("stored_name") for f in updated_data}
-        existing_visual_names = [f.get("original_name") for f in updated_data]
 
         excluded_files = {"files_data.json", "action_log.json"}
         temp_extensions = {".tmp", ".download"}
 
         for file_path in user_dir.iterdir():
-            if not file_path.is_file():
+            if not file_path.is_file() or file_path.name in excluded_files:
                 continue
 
-            # Удаляем временные файлы, если они остались от предыдущих прерванных сессий
             if file_path.suffix in temp_extensions:
                 try:
                     file_path.unlink()
@@ -79,7 +96,7 @@ def build_dispatcher() -> Dispatcher:
                     pass
                 continue
 
-            if (file_path.name not in excluded_files and file_path.name not in stored_names):
+            if file_path.name not in stored_names:
                 # Убираем ВСЕ технические префиксы из имени файла на диске
                 clean_base = file_path.stem
                 while True:
@@ -89,17 +106,20 @@ def build_dispatcher() -> Dispatcher:
                     clean_base = clean_base[len(m.group(0)):]
 
                 # Генерируем уникальное сокращенное имя (не более MAX_DISPLAY_NAME_LEN)
-                new_display_name = shorten_name(f"fnd_{clean_base}", MAX_DISPLAY_NAME_LEN, existing_visual_names)
-                existing_visual_names.append(new_display_name)
+                new_display_name = shorten_name(f"fnd_{clean_base}{file_path.suffix}", MAX_DISPLAY_NAME_LEN, seen_visual_names)
+                seen_visual_names.append(new_display_name)
 
                 # Добавляем файл в список
-                file_info = {
+                updated_data.append({
                     "original_name": new_display_name,
                     "stored_name": file_path.name,
                     "upload_date": datetime.fromtimestamp(file_path.stat().st_ctime).isoformat(),
                     "size": file_path.stat().st_size
-                }
-                append_file_data(files_data_path, file_info)
+                })
+                data_changed = True
+
+        if data_changed or len(updated_data) != len(existing_data):
+            atomic_write_text(files_data_path, json.dumps(updated_data, ensure_ascii=False, indent=2))
 
 
     def _format_date(raw_date: str) -> str:
