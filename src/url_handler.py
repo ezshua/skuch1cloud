@@ -6,8 +6,8 @@ from pathlib import Path
 from datetime import datetime
 from urllib.parse import urlparse, unquote, urljoin
 
-from config import MAX_FILE_SIZE, BOT_TOTAL_DATA_LIMIT, logger
-from utils import normalize_filename, unique_path, append_file_data, format_size, get_dir_size
+from config import MAX_FILE_SIZE, BOT_TOTAL_DATA_LIMIT, MAX_DISPLAY_NAME_LEN, logger
+from utils import normalize_filename, unique_path, append_file_data, format_size, get_dir_size, shorten_name
 
 def extract_og_image(html_text: str) -> str | None:
     """Извлечь URL изображения из мета-тегов Open Graph."""
@@ -96,11 +96,10 @@ async def download_file_from_url(url: str, destination_dir: Path, is_retry: bool
                     original_name = unquote(Path(parsed_url.path).name)
 
                 if not original_name or original_name == '.':
-                    original_name = f"downloaded_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                    original_name = datetime.now().strftime('%Y%m%d_%H%M%S')
 
-                # Подготовка для новых правил именования загрузок по URL
-                # Пока отображаемое и базовое имя совпадают
-                display_name = original_name
+                # Применяем префикс URL и сокращаем имя для отображения
+                display_name = shorten_name(f"dwn_{original_name}", MAX_DISPLAY_NAME_LEN)
 
                 final_name = normalize_filename(display_name)
                 tmp_path = destination_dir / f"{final_name}.download"

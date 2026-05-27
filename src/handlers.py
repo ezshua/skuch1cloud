@@ -8,11 +8,11 @@ from aiogram import Dispatcher, F, Bot
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
-from config import MAX_FILE_SIZE, BOT_TOTAL_DATA_LIMIT, ADMIN_ID, FILE_ICONS, logger, get_base_path
+from config import MAX_FILE_SIZE, BOT_TOTAL_DATA_LIMIT, MAX_DISPLAY_NAME_LEN, ADMIN_ID, FILE_ICONS, logger, get_base_path
 from file_handler import save_incoming_file, get_user_files
 from utils import (
     format_size, append_file_data, atomic_write_text, get_dir_size, collect_users_summary,
-    log_user_action, load_json_safe, collect_daily_report
+    log_user_action, load_json_safe, collect_daily_report, shorten_name
 )
 import json
 from users import ensure_user_dir
@@ -62,6 +62,7 @@ def build_dispatcher() -> Dispatcher:
             atomic_write_text(files_data_path, json.dumps(updated_data, ensure_ascii=False, indent=2))
 
         stored_names = {f.get("stored_name") for f in updated_data}
+        existing_visual_names = [f.get("original_name") for f in updated_data]
 
         excluded_files = {"files_data.json", "action_log.json"}
         temp_extensions = {".tmp", ".download"}
@@ -79,9 +80,21 @@ def build_dispatcher() -> Dispatcher:
                 continue
 
             if (file_path.name not in excluded_files and file_path.name not in stored_names):
+                # Убираем ВСЕ технические префиксы из имени файла на диске
+                clean_base = file_path.stem
+                while True:
+                    m = re.match(r'^(fwd|upl|dwn|fnd)_', clean_base)
+                    if not m:
+                        break
+                    clean_base = clean_base[len(m.group(0)):]
+
+                # Генерируем уникальное сокращенное имя (не более MAX_DISPLAY_NAME_LEN)
+                new_display_name = shorten_name(f"fnd_{clean_base}", MAX_DISPLAY_NAME_LEN, existing_visual_names)
+                existing_visual_names.append(new_display_name)
+
                 # Добавляем файл в список
                 file_info = {
-                    "original_name": file_path.name,
+                    "original_name": new_display_name,
                     "stored_name": file_path.name,
                     "upload_date": datetime.fromtimestamp(file_path.stat().st_ctime).isoformat(),
                     "size": file_path.stat().st_size
@@ -122,23 +135,48 @@ def build_dispatcher() -> Dispatcher:
 
     def _clean_filename(text: str) -> str:
         """Нормализует имя файла для сравнения: NFKC, удаление невидимых символов и пробелов."""
-        # Удаляем известные иконки и всё, что до них (номер в списке)
+        # 1. Удаляем номер в начале списка (например, "37. ")
+        text = re.sub(r'^\s*\d+\.\s*', '', text)
+
+        # 2. Удаляем известные иконки, учитывая возможные невидимые вариаторы (\ufe0f)
         icons = list(FILE_ICONS.values())
         for icon in icons:
-            if icon in text:
-                text = text.split(icon)[-1]
+            # Пробуем найти иконку как есть и в "чистом" виде
+            variants = [icon, icon.replace('\ufe0f', '')]
+            found = False
+            for v in variants:
+                if v in text:
+                    text = text.split(v)[-1]
+                    found = True
+                    break
+            if found:
+                break
+
+        # 3. Удаляем ВСЕ технические префиксы источников (могут быть fnd_upl_...)
+        text = text.strip()
+        while True:
+            changed = False
+            for prefix in ["fwd_", "dwn_", "upl_", "fnd_"]:
+                if text.startswith(prefix):
+                    text = text[len(prefix):]
+                    changed = True
+            if not changed:
                 break
 
         # Нормализация Unicode (совмещает символы и их модификаторы в одну форму)
         text = unicodedata.normalize('NFKC', text)
 
-        # Удаляем расширение перед очисткой пробелов, чтобы "file.txt" и "file" были равны при поиске
-        text = Path(text).stem
+        # 4. Удаляем любые оставшиеся спецсимволы/пробелы в самом начале до первой буквы или цифры
+        text = re.sub(r'^[^\w\d]+', '', text)
 
-        # Удаляем невидимые символы: вариаторы (\ufe00-\ufe0f), ZWSP (\u200b), мягкие переносы (\u00ad) и др.
+        # 5. Удаляем расширение для сравнения (1-5 символов после точки в конце).
+        # Это позволяет "точному совпадению" находить файл, даже если расширение не введено пользователем.
+        text = re.sub(r'\.[a-zA-Z0-9]{1,5}$', '', text)
+
+        # 6. Удаляем невидимые символы: вариаторы (\ufe00-\ufe0f), ZWSP (\u200b), мягкие переносы (\u00ad) и др.
         text = re.sub(r'[\u00ad\u200b-\u200d\ufeff\ufe00-\ufe0f]', '', text)
 
-        # Удаляем все пробелы, табы и переносы строк, приводим к нижнему регистру.
+        # 7. Удаляем все пробелы, табы и переносы строк, приводим к нижнему регистру.
         return "".join(text.split()).lower()
 
 
@@ -169,14 +207,14 @@ def build_dispatcher() -> Dispatcher:
             name = file_info.get("original_name", "Unknown")
             size = format_size(file_info.get("size", 0))
             date_str = _format_date(file_info.get("upload_date", ""))
-            icon = _get_file_icon(name)
+            # Определяем иконку по физическому имени, так как в визуальном расширения может не быть
+            icon = _get_file_icon(file_info.get("stored_name", name))
 
-            # Отображаем имя без расширения для пользователя
-            display_name = Path(name).stem
+            # Отображаем имя целиком (оно уже сокращено функцией shorten_name и содержит уникальные индексы)
             prefix = f"{i}. {icon} "
             # Динамический отступ, чтобы имя во второй строке было ровно под именем в первой
-            wrapped_name = _wrap_filename(display_name, indent=" " * len(prefix))
-            lines.append(f"<code>{prefix}{wrapped_name}</code>\n   📅 {date_str} | 💾 {size}\n")
+            wrapped_name = _wrap_filename(name, indent=" " * len(prefix))
+            lines.append(f"{prefix}<code>{wrapped_name}</code>\n   📅 {date_str} | 💾 {size}\n")
 
         response = header + "".join(lines)
 
@@ -333,7 +371,11 @@ def build_dispatcher() -> Dispatcher:
         log_user_action(user_dir, "user_command", {"command": f"/delete {filename}"})
 
         files_data = get_user_files(user_dir)
-        targets = [f for f in files_data if filename in _clean_filename(f.get("original_name", ""))]
+        # Сначала ищем точное совпадение очищенных имен (для уникальности)
+        targets = [f for f in files_data if _clean_filename(f.get("original_name", "")) == filename]
+        if not targets:
+            # Если точного нет, ищем вхождения (подстроку)
+            targets = [f for f in files_data if filename in _clean_filename(f.get("original_name", ""))]
 
         if not targets:
             await message.answer(f"❌ Файл <code>{filename}</code> не найден в вашем списке.")
@@ -348,20 +390,20 @@ def build_dispatcher() -> Dispatcher:
         """Вспомогательная функция для запроса подтверждения удаления."""
         size = format_size(target.get("size", 0))
         date_str = _format_date(target.get("upload_date", ""))
-        icon = _get_file_icon(target['original_name'])
+        icon = _get_file_icon(target.get("stored_name", target['original_name']))
 
         counter = f" (файл {idx + 1} из {total})" if total > 1 else ""
         next_info = "\nЛюбое другое сообщение перейдет к следующему файлу." if idx < total - 1 else "\nЛюбое другое сообщение отменит удаление."
 
         await message.answer(
             f"❓ <b>Подтвердите удаление файла{counter}:</b>\n\n"
-            f"<code>{icon} {_wrap_filename(target['original_name'], indent='   ')}</code>\n"
+            f"<code>{icon} {_wrap_filename(target['stored_name'], indent='   ')}</code>\n"
             f"📅 {date_str} | 💾 {size}\n\n"
             f"Для удаления отправьте: <b>да</b>, <b>yes</b> или <b>так</b>.\n"
             f"{next_info}"
         )
         user_dir = await ensure_user_dir(message.from_user, create=False)
-        log_user_action(user_dir, "bot_response", {"type": "delete_confirmation_request", "file": target['original_name']})
+        log_user_action(user_dir, "bot_response", {"type": "delete_confirmation_request", "file": target['stored_name']})
 
     @dp.message(F.document | F.audio | F.video | F.voice | F.sticker | F.video_note | F.photo)
     async def incoming_files_handler(message: Message) -> None:
@@ -377,7 +419,7 @@ def build_dispatcher() -> Dispatcher:
         if user_id in pending_deletions:
             state = pending_deletions.pop(user_id)
             # Берем имя первого файла из очереди для уведомления об отмене (без расширения)
-            cancelled_delete_target_name = Path(state["targets"][0]["original_name"]).stem
+            cancelled_delete_target_name = state["targets"][0]["original_name"]
         # Удаляем сообщение /status при получении нового файла
         status_msg_id = user_status_msgs.pop(message.from_user.id, None)
         if status_msg_id:
@@ -421,8 +463,8 @@ def build_dispatcher() -> Dispatcher:
                     new_size = format_size(file_info.get("size", 0))
                     new_date = _format_date(file_info.get("upload_date", ""))
 
-                    old_icon = _get_file_icon(duplicate_info['original_name'])
-                    new_icon = _get_file_icon(file_info['original_name'])
+                    old_icon = _get_file_icon(duplicate_info.get("stored_name", duplicate_info['original_name']))
+                    new_icon = _get_file_icon(file_info.get("stored_name", file_info['original_name']))
                     await message.answer(
                         f"⚠️ Файл с таким именем уже был:\n"
                         f"<code>{old_icon} {_wrap_filename(duplicate_info['original_name'], indent='   ')}</code>\n"
@@ -495,8 +537,8 @@ def build_dispatcher() -> Dispatcher:
                     updated_data = [f for f in files_data if f.get("stored_name") != target["stored_name"]]
                     atomic_write_text(files_data_path, json.dumps(updated_data, ensure_ascii=False, indent=2))
 
-                    await message.answer(f"✅ Файл <code>{target['original_name']}</code> удален.")
-                    log_user_action(user_dir, "bot_response", {"type": "delete_success", "file": target['original_name']})
+                    await message.answer(f"✅ Файл <code>{target['stored_name']}</code> удален.")
+                    log_user_action(user_dir, "bot_response", {"type": "delete_success", "file": target['stored_name']})
 
                     # Удаляем старое сообщение статуса и вызываем новый статус
                     prev_status_id = user_status_msgs.pop(user_id, None)
@@ -519,7 +561,7 @@ def build_dispatcher() -> Dispatcher:
                     pending_deletions.pop(user_id)
                     if user_dir:
                         # Используем stem от первого файла для сообщения об отмене всей группы
-                        group_name = Path(targets[0]['original_name']).stem
+                        group_name = targets[0]['original_name']
                         await message.answer(f"🚫 Удаление файлов <code>{group_name}</code> отменено.")
                         log_user_action(user_dir, "bot_response", {"type": "delete_cancelled_by_text"})
                 return
@@ -551,7 +593,7 @@ def build_dispatcher() -> Dispatcher:
             try:
                 file_info = await download_file_from_url(url, user_dir)
 
-                icon = _get_file_icon(file_info['original_name'])
+                icon = _get_file_icon(file_info.get("stored_name", file_info['original_name']))
                 await status_msg.edit_text(
                     f"✅ Файл успешно скачан и сохранен!\n\n"
                     f"{icon} <b>Имя:</b> <code>{file_info['original_name']}</code>\n"
@@ -570,19 +612,30 @@ def build_dispatcher() -> Dispatcher:
         if user_dir:
             cleaned_name = _clean_filename(message.text)
             files_data = get_user_files(user_dir)
-            # Ищем совпадения: если ввод пользователя является частью имени файла
-            targets = [f for f in files_data if cleaned_name in _clean_filename(f.get("original_name", ""))]
+            # 1. Сначала ищем точное совпадение (приоритет уникальности)
+            targets = [f for f in files_data if _clean_filename(f.get("original_name", "")) == cleaned_name]
+            if not targets:
+                # 2. Если точного нет, ищем вхождения (подстроку)
+                targets = [f for f in files_data if cleaned_name in _clean_filename(f.get("original_name", ""))]
 
             if targets:
                 for target in targets:
                     file_path = user_dir / target["stored_name"]
                     if file_path.exists():
                         try:
-                            # Отправляем найденный файл
-                            icon = _get_file_icon(target['original_name'])
+                            # Убираем только технический префикс.
+                            # Расширение оставляем, так как оно необходимо Telegram для генерации превью (thumbnail).
+                            clean_name = re.sub(r'^(fwd|upl|dwn|fnd)_', '', target["original_name"])
+
+                            # Если в визуальном имени нет расширения, добавляем его из физического для корректной отправки
+                            ext = Path(target["stored_name"]).suffix
+                            if ext and not clean_name.lower().endswith(ext.lower()):
+                                clean_name += ext
+
+                            icon = _get_file_icon(target.get("stored_name", target['original_name']))
                             await message.answer_document(
-                                document=FSInputFile(path=file_path, filename=target["original_name"]),
-                                caption=f"{icon} Файл: {target['original_name']}"
+                                document=FSInputFile(path=file_path, filename=clean_name),
+                                caption=f"{icon} Файл: <code>{target['stored_name']}</code>"
                             )
                             log_user_action(user_dir, "bot_response", {"type": "send_file", "file": target['original_name']})
                         except Exception as e:

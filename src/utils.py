@@ -39,6 +39,53 @@ def normalize_filename(file_name: str) -> str:
     stem = re.sub(r"_+", "_", stem).strip("._-")[:120] or "file"
     return f"{stem.lower()}.{ext}" if ext else stem.lower()
 
+def shorten_name(name: str, max_len: int, existing_names: list[str] = None) -> str:
+    """
+    Сокращает имя файла посередине, если оно превышает max_len или уже существует.
+    Пример: "ОченьДлинноеИмяФайла_2024.jpg" -> "ОченьДлин....2024.jpg"
+    Если имя занято: "ОченьДлин..1..2024.jpg"
+    """
+    def _compose(stem_part: str, ext_part: str, limit: int, counter: int = None) -> str:
+        # Выбираем разделитель: либо 4 точки, либо цифра в точках для уникальности
+        sep = f"..{counter}.." if counter is not None else "...."
+        room = limit - len(ext_part) - len(sep)
+
+        if room <= 4:
+            # Если места критически мало, просто обрезаем начало и ставим многоточие
+            dots = "..."
+            return (stem_part + ext_part)[:limit - len(dots)] + dots
+
+        # Распределяем оставшееся место между началом и концом имени
+        left_len = room // 2 + (room % 2)
+        right_len = room // 2
+        return stem_part[:left_len] + sep + stem_part[-right_len:] + ext_part
+
+    # Если имя короткое и проверка на уникальность не требуется или пройдена
+    if len(name) <= max_len and (not existing_names or name not in existing_names):
+        return name
+
+    # Выделяем расширение
+    if "." in name and not name.startswith("."):
+        stem, ext = name.rsplit(".", 1)
+        ext = "." + ext
+    else:
+        stem, ext = name, ""
+
+    # 1. Пытаемся просто сократить, если имя слишком длинное
+    candidate = name
+    if len(name) > max_len:
+        candidate = _compose(stem, ext, max_len)
+
+    # 2. Если имя (сокращенное или исходное) конфликтует, ищем свободный номер
+    if existing_names and candidate in existing_names:
+        counter = 1
+        while True:
+            candidate = _compose(stem, ext, max_len, counter)
+            if candidate not in existing_names or counter > 999:
+                break
+            counter += 1
+
+    return candidate
 
 def unique_path(path: Path) -> Path:
     """Найти уникальный путь, добавив суффикс если файл существует."""

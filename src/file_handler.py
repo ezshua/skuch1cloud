@@ -5,8 +5,8 @@ from pathlib import Path
 
 from aiogram.types import Message, MessageOriginUser, MessageOriginChat, MessageOriginChannel, MessageOriginHiddenUser
 
-from config import BOT_TOTAL_DATA_LIMIT
-from utils import normalize_filename, unique_path, append_file_data, slugify_cyrillic_to_ascii, load_json_list_safe, format_size, get_dir_size
+from config import BOT_TOTAL_DATA_LIMIT, MAX_DISPLAY_NAME_LEN
+from utils import normalize_filename, unique_path, append_file_data, slugify_cyrillic_to_ascii, load_json_list_safe, format_size, get_dir_size, shorten_name
 
 
 
@@ -38,36 +38,36 @@ def _extract_metadata(message: Message) -> dict:
     return metadata
 
 
-def _generate_storage_base_name(original_name: str, metadata: dict, is_document: bool) -> str:
-    """Реализует СТАРУЮ логику формирования имени для сохранения (stored_name)."""
-    name_metadata = ""
-    if metadata["forward_from"]:
-        date_label = metadata["forward_date"].strftime("%Y%m%d_%H%M%S")
-        name_metadata = f"forward [{metadata['forward_from']}]-{date_label}"
-    elif metadata["caption"]:
-        name_metadata = metadata["caption"]
+def _generate_storage_base_name(original_name: str, extension: str, metadata: dict, message: Message) -> str:
+    """Формирует базу для имени файла на диске с учетом префиксов источника."""
+    prefix = "fwd_" if metadata["forward_from"] else "upl_"
 
-    if name_metadata and is_document and original_name:
-        if "." in original_name:
-            name_part, ext_part = original_name.rsplit(".", 1)
-            return f"{name_part}({name_metadata}).{ext_part}"
-        return f"{original_name}({name_metadata})"
+    name = original_name
+    if not name:
+        # Если имени нет (фото, стикер), используем только дату и ID сообщения
+        timestamp = message.date.strftime("%Y%m%d_%H%M%S")
+        name = f"{timestamp}_{message.message_id}{extension}"
 
-    return original_name
+    return f"{prefix}{name}"
 
 
-def _generate_display_name(original_name: str, extension: str, metadata: dict, message: Message) -> str:
+def _generate_display_name(original_name: str, extension: str, metadata: dict, message: Message, existing_names: list[str] = None) -> str:
     """Генерирует имя для отображения пользователю (место для ваших новых правил)."""
-    # Пока оставляем логику, идентичную старой, до получения новых правил
-    display_name = _generate_storage_base_name(original_name, metadata, bool(message.document))
+    prefix = "upl_"
+    if metadata["forward_from"]:
+        prefix = "fwd_"
 
-    if not display_name:
-        if metadata["caption"]:
-            display_name = f"{metadata['caption'][:150].strip()}{extension}"
-        else:
-            timestamp = message.date.strftime("%Y%m%d_%H%M%S")
-            display_name = f"file_{timestamp}_{message.message_id}{extension}"
+    # Приоритет: подпись (caption), затем оригинальное имя файла
+    base_name = metadata["caption"] or original_name
 
+    if not base_name:
+        timestamp = message.date.strftime("%Y%m%d_%H%M%S")
+        base_name = f"{timestamp}_{message.message_id}{extension}"
+    elif extension and not base_name.lower().endswith(extension.lower()):
+        # Добавляем расширение, если оно отсутствует (например, если взято из caption)
+        base_name += extension
+
+    display_name = shorten_name(f"{prefix}{base_name}", MAX_DISPLAY_NAME_LEN, existing_names)
     return display_name
 
 
@@ -104,11 +104,15 @@ async def save_incoming_file(message: Message, file_name: str | None, destinatio
     # 1. Извлекаем метаданные и формируем имена
     metadata = _extract_metadata(message)
 
-    # База для физического имени (сохраняем старую логику)
-    storage_base = _generate_storage_base_name(original_name, metadata, bool(message.document))
+    # Получаем список уже существующих отображаемых имен пользователя
+    files_data = get_user_files(destination_dir)
+    existing_visual_names = [f.get("original_name") for f in files_data]
 
-    # Имя для отображения пользователю (сюда пойдут новые правила)
-    display_name = _generate_display_name(original_name, extension, metadata, message)
+    # База для физического имени (сохраняем старую логику)
+    storage_base = _generate_storage_base_name(original_name, extension, metadata, message)
+
+    # Сначала генерируем базовое имя для проверки на дубликат
+    display_name_base = _generate_display_name(original_name, extension, metadata, message)
 
     file_size = content.file_size or 0
 
@@ -125,18 +129,11 @@ async def save_incoming_file(message: Message, file_name: str | None, destinatio
     if disk_usage.free < file_size:
         raise OSError(f"На физическом диске сервера недостаточно места. Свободно: {format_size(disk_usage.free)}.")
 
-    # ПРОВЕРКА НА ДУБЛИКАТ ИМЕНИ
-    files_data = get_user_files(destination_dir)
-    duplicate_info = next((f for f in files_data if f.get("original_name") == display_name), None)
+    # ПРОВЕРКА НА ДУБЛИКАТ (был ли файл с таким же исходным "визуальным" именем)
+    duplicate_info = next((f for f in files_data if f.get("original_name") == display_name_base), None)
 
-    if duplicate_info:
-        # Добавляем текущее время без двоеточий
-        time_suffix = message.date.strftime("%H%M%S")
-        if "." in display_name:
-            stem, ext = display_name.rsplit(".", 1)
-            display_name = f"{stem}({time_suffix}).{ext}"
-        else:
-            display_name = f"{display_name}({time_suffix})"
+    # Теперь генерируем окончательное имя с учетом уникальности (циферка в точках)
+    display_name = shorten_name(display_name_base, MAX_DISPLAY_NAME_LEN, existing_visual_names)
 
     final_name = normalize_filename(storage_base or display_name)
     # Используем file_id для временного файла, чтобы избежать конфликтов при одновременной загрузке
