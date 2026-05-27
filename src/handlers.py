@@ -398,6 +398,9 @@ def build_dispatcher() -> Dispatcher:
         # Сначала ищем точное совпадение очищенных имен (для уникальности)
         targets = [f for f in files_data if _clean_filename(f.get("original_name", "")) == filename]
         if not targets:
+            if len(filename) < 3:
+                await message.answer("⚠️ Имя слишком короткое для поиска по частичному совпадению (нужно минимум 3 символа).")
+                return
             # Если точного нет, ищем вхождения (подстроку)
             targets = [f for f in files_data if filename in _clean_filename(f.get("original_name", ""))]
 
@@ -641,6 +644,9 @@ def build_dispatcher() -> Dispatcher:
                 # 1. Сначала ищем точное совпадение (приоритет уникальности)
                 targets = [f for f in files_data if _clean_filename(f.get("original_name", "")) == cleaned_name]
                 if not targets:
+                    if len(cleaned_name) < 3:
+                        await message.answer("⚠️ Имя слишком короткое для поиска по частичному совпадению (нужно минимум 3 символа).")
+                        return
                     # 2. Если точного нет, ищем вхождения (подстроку)
                     targets = [f for f in files_data if cleaned_name in _clean_filename(f.get("original_name", ""))]
 
