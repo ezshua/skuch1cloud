@@ -98,7 +98,11 @@ async def download_file_from_url(url: str, destination_dir: Path, is_retry: bool
                 if not original_name or original_name == '.':
                     original_name = f"downloaded_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
-                final_name = normalize_filename(original_name)
+                # Подготовка для новых правил именования загрузок по URL
+                # Пока отображаемое и базовое имя совпадают
+                display_name = original_name
+
+                final_name = normalize_filename(display_name)
                 tmp_path = destination_dir / f"{final_name}.download"
 
                 destination_dir.mkdir(parents=True, exist_ok=True)
@@ -122,7 +126,7 @@ async def download_file_from_url(url: str, destination_dir: Path, is_retry: bool
                 shutil.move(str(tmp_path), str(final_path))
 
                 file_info = {
-                    "original_name": original_name,
+                    "original_name": display_name,
                     "stored_name": final_path.name,
                     "upload_date": datetime.now().isoformat(),
                     "size": downloaded_size

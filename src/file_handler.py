@@ -10,6 +10,67 @@ from utils import normalize_filename, unique_path, append_file_data, slugify_cyr
 
 
 
+def _extract_metadata(message: Message) -> dict:
+    """Извлекает метаданные из сообщения для формирования имен."""
+    metadata = {
+        "forward_from": None,
+        "forward_date": None,
+        "caption": None,
+    }
+    if message.forward_origin:
+        origin = message.forward_origin
+        source_name = "Unknown"
+        if isinstance(origin, MessageOriginUser):
+            source_name = origin.sender_user.full_name
+        elif isinstance(origin, MessageOriginChat):
+            source_name = origin.sender_chat.title
+        elif isinstance(origin, MessageOriginChannel):
+            source_name = origin.chat.title
+        elif isinstance(origin, MessageOriginHiddenUser):
+            source_name = origin.sender_user_name
+
+        metadata["forward_from"] = source_name
+        metadata["forward_date"] = origin.date
+
+    if message.caption:
+        metadata["caption"] = " ".join(message.caption.split())
+
+    return metadata
+
+
+def _generate_storage_base_name(original_name: str, metadata: dict, is_document: bool) -> str:
+    """Реализует СТАРУЮ логику формирования имени для сохранения (stored_name)."""
+    name_metadata = ""
+    if metadata["forward_from"]:
+        date_label = metadata["forward_date"].strftime("%Y%m%d_%H%M%S")
+        name_metadata = f"forward [{metadata['forward_from']}]-{date_label}"
+    elif metadata["caption"]:
+        name_metadata = metadata["caption"]
+
+    if name_metadata and is_document and original_name:
+        if "." in original_name:
+            name_part, ext_part = original_name.rsplit(".", 1)
+            return f"{name_part}({name_metadata}).{ext_part}"
+        return f"{original_name}({name_metadata})"
+
+    return original_name
+
+
+def _generate_display_name(original_name: str, extension: str, metadata: dict, message: Message) -> str:
+    """Генерирует имя для отображения пользователю (место для ваших новых правил)."""
+    # Пока оставляем логику, идентичную старой, до получения новых правил
+    display_name = _generate_storage_base_name(original_name, metadata, bool(message.document))
+
+    if not display_name:
+        if metadata["caption"]:
+            display_name = f"{metadata['caption'][:150].strip()}{extension}"
+        else:
+            timestamp = message.date.strftime("%Y%m%d_%H%M%S")
+            display_name = f"file_{timestamp}_{message.message_id}{extension}"
+
+    return display_name
+
+
 async def save_incoming_file(message: Message, file_name: str | None, destination_dir: Path) -> tuple[dict, dict | None]:
     """
     Сохранить входящий файл/медиа из сообщения.
@@ -40,34 +101,14 @@ async def save_incoming_file(message: Message, file_name: str | None, destinatio
     if not content:
         return {}, None
 
-    # Извлекаем метаданные для имени: либо информацию о пересылке, либо подпись
-    name_metadata = ""
-    if message.forward_origin:
-        origin = message.forward_origin
-        source_name = "Unknown"
-        if isinstance(origin, MessageOriginUser):
-            source_name = origin.sender_user.full_name
-        elif isinstance(origin, MessageOriginChat):
-            source_name = origin.sender_chat.title
-        elif isinstance(origin, MessageOriginChannel):
-            source_name = origin.chat.title
-        elif isinstance(origin, MessageOriginHiddenUser):
-            source_name = origin.sender_user_name
+    # 1. Извлекаем метаданные и формируем имена
+    metadata = _extract_metadata(message)
 
-        date_label = origin.date.strftime("%Y%m%d_%H%M%S")
-        name_metadata = f"forward [{source_name}]-{date_label}"
-    elif message.caption:
-        # Очищаем подпись от переносов строк для безопасного хранения и поиска
-        name_metadata = " ".join(message.caption.split())
+    # База для физического имени (сохраняем старую логику)
+    storage_base = _generate_storage_base_name(original_name, metadata, bool(message.document))
 
-    # Если есть метаданные и это документ, добавляем их в имя файла
-    if name_metadata and message.document:
-        # Извлекаем имя и расширение, чтобы вставить подпись перед точкой
-        if "." in original_name:
-            name_part, ext_part = original_name.rsplit(".", 1)
-            original_name = f"{name_part}({name_metadata}).{ext_part}"
-        else:
-            original_name = f"{original_name}({name_metadata})"
+    # Имя для отображения пользователю (сюда пойдут новые правила)
+    display_name = _generate_display_name(original_name, extension, metadata, message)
 
     file_size = content.file_size or 0
 
@@ -84,29 +125,20 @@ async def save_incoming_file(message: Message, file_name: str | None, destinatio
     if disk_usage.free < file_size:
         raise OSError(f"На физическом диске сервера недостаточно места. Свободно: {format_size(disk_usage.free)}.")
 
-    if not original_name and name_metadata:
-            # Для "красивого" имени в списке оставляем подпись как есть (без новых строк),
-            # но ограничиваем длину, чтобы оно не было слишком "странным".
-            original_name = f"{name_metadata[:150].strip()}{extension}"
-
-    if not original_name:
-            timestamp = message.date.strftime("%Y%m%d_%H%M%S")
-            original_name = f"file_{timestamp}_{content.file_id[-8:]}{extension}"
-
     # ПРОВЕРКА НА ДУБЛИКАТ ИМЕНИ
     files_data = get_user_files(destination_dir)
-    duplicate_info = next((f for f in files_data if f.get("original_name") == original_name), None)
+    duplicate_info = next((f for f in files_data if f.get("original_name") == display_name), None)
 
     if duplicate_info:
         # Добавляем текущее время без двоеточий
         time_suffix = message.date.strftime("%H%M%S")
-        if "." in original_name:
-            stem, ext = original_name.rsplit(".", 1)
-            original_name = f"{stem}({time_suffix}).{ext}"
+        if "." in display_name:
+            stem, ext = display_name.rsplit(".", 1)
+            display_name = f"{stem}({time_suffix}).{ext}"
         else:
-            original_name = f"{original_name}({time_suffix})"
+            display_name = f"{display_name}({time_suffix})"
 
-    final_name = normalize_filename(original_name)
+    final_name = normalize_filename(storage_base or display_name)
     # Используем file_id для временного файла, чтобы избежать конфликтов при одновременной загрузке
     tmp_path = destination_dir / f"{content.file_id}.download"
 
@@ -129,7 +161,7 @@ async def save_incoming_file(message: Message, file_name: str | None, destinatio
         await asyncio.to_thread(shutil.move, str(tmp_path), str(final_path))
 
         file_info = {
-            "original_name": original_name,
+            "original_name": display_name,
             "stored_name": final_path.name,
             "upload_date": datetime.now().isoformat(),  # Используем локальное наивное время для консистентности
             "size": file_size

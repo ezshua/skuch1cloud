@@ -8,7 +8,7 @@ from aiogram import Dispatcher, F, Bot
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
-from config import MAX_FILE_SIZE, BOT_TOTAL_DATA_LIMIT, ADMIN_ID, logger, get_base_path
+from config import MAX_FILE_SIZE, BOT_TOTAL_DATA_LIMIT, ADMIN_ID, FILE_ICONS, logger, get_base_path
 from file_handler import save_incoming_file, get_user_files
 from utils import (
     format_size, append_file_data, atomic_write_text, get_dir_size, collect_users_summary,
@@ -48,12 +48,21 @@ def build_dispatcher() -> Dispatcher:
 
 
     async def scan_and_fix_files(user_dir: Path) -> None:
-        """Сканирует директорию на наличие файлов, которых нет в files_data.json."""
+        """
+        Синхронизирует индекс файлов с реальным содержимым папки:
+        1. Удаляет записи о файлах, которые физически отсутствуют.
+        2. Добавляет новые файлы, найденные в директории.
+        """
         files_data_path = user_dir / "files_data.json"
         existing_data = get_user_files(user_dir)
-        stored_names = {f.get("stored_name") for f in existing_data}
 
-        # Служебные файлы и временные расширения, которые не должны попасть в индекс
+        # 1. Очистка: оставляем только те записи, файлы которых реально существуют на диске
+        updated_data = [f for f in existing_data if f.get("stored_name") and (user_dir / f["stored_name"]).exists()]
+        if len(updated_data) != len(existing_data):
+            atomic_write_text(files_data_path, json.dumps(updated_data, ensure_ascii=False, indent=2))
+
+        stored_names = {f.get("stored_name") for f in updated_data}
+
         excluded_files = {"files_data.json", "action_log.json"}
         temp_extensions = {".tmp", ".download"}
 
@@ -97,14 +106,34 @@ def build_dispatcher() -> Dispatcher:
         return f"\n{indent}".join(chunks)
 
 
+    def _get_file_icon(filename: str) -> str:
+        """Определяет иконку на основе расширения файла."""
+        name_lower = filename.lower()
+        if name_lower.endswith(('.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff')):
+            return FILE_ICONS["image"]
+        if name_lower.endswith(('.mp4', '.mov', '.avi', '.mkv', '.3gp', '.flv')):
+            return FILE_ICONS["video"]
+        if name_lower.endswith(('.mp3', '.wav', '.ogg', '.m4a', '.flac', '.aac')):
+            return FILE_ICONS["audio"]
+        if name_lower.endswith(('.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz')):
+            return FILE_ICONS["archive"]
+        return FILE_ICONS["document"]
+
+
     def _clean_filename(text: str) -> str:
         """Нормализует имя файла для сравнения: NFKC, удаление невидимых символов и пробелов."""
-        # Если скопировалось вместе с иконкой "📁", берем только то, что после неё
-        if "📁" in text:
-            text = text.split("📁")[-1]
+        # Удаляем известные иконки и всё, что до них (номер в списке)
+        icons = list(FILE_ICONS.values())
+        for icon in icons:
+            if icon in text:
+                text = text.split(icon)[-1]
+                break
 
         # Нормализация Unicode (совмещает символы и их модификаторы в одну форму)
         text = unicodedata.normalize('NFKC', text)
+
+        # Удаляем расширение перед очисткой пробелов, чтобы "file.txt" и "file" были равны при поиске
+        text = Path(text).stem
 
         # Удаляем невидимые символы: вариаторы (\ufe00-\ufe0f), ZWSP (\u200b), мягкие переносы (\u00ad) и др.
         text = re.sub(r'[\u00ad\u200b-\u200d\ufeff\ufe00-\ufe0f]', '', text)
@@ -140,9 +169,13 @@ def build_dispatcher() -> Dispatcher:
             name = file_info.get("original_name", "Unknown")
             size = format_size(file_info.get("size", 0))
             date_str = _format_date(file_info.get("upload_date", ""))
-            prefix = f"{i}. 📁 "
+            icon = _get_file_icon(name)
+
+            # Отображаем имя без расширения для пользователя
+            display_name = Path(name).stem
+            prefix = f"{i}. {icon} "
             # Динамический отступ, чтобы имя во второй строке было ровно под именем в первой
-            wrapped_name = _wrap_filename(name, indent=" " * len(prefix))
+            wrapped_name = _wrap_filename(display_name, indent=" " * len(prefix))
             lines.append(f"<code>{prefix}{wrapped_name}</code>\n   📅 {date_str} | 💾 {size}\n")
 
         response = header + "".join(lines)
@@ -300,26 +333,35 @@ def build_dispatcher() -> Dispatcher:
         log_user_action(user_dir, "user_command", {"command": f"/delete {filename}"})
 
         files_data = get_user_files(user_dir)
-        target = next((f for f in files_data if _clean_filename(f.get("original_name", "")) == filename), None)
+        targets = [f for f in files_data if filename in _clean_filename(f.get("original_name", ""))]
 
-        if not target:
+        if not targets:
             await message.answer(f"❌ Файл <code>{filename}</code> не найден в вашем списке.")
             return
 
-        # Сохраняем состояние ожидания подтверждения
-        pending_deletions[message.from_user.id] = target
+        # Сохраняем очередь на удаление
+        pending_deletions[message.from_user.id] = {"targets": targets, "index": 0}
+        await _ask_deletion_confirmation(message, targets[0], 0, len(targets))
 
+
+    async def _ask_deletion_confirmation(message: Message, target: dict, idx: int, total: int):
+        """Вспомогательная функция для запроса подтверждения удаления."""
         size = format_size(target.get("size", 0))
         date_str = _format_date(target.get("upload_date", ""))
+        icon = _get_file_icon(target['original_name'])
+
+        counter = f" (файл {idx + 1} из {total})" if total > 1 else ""
+        next_info = "\nЛюбое другое сообщение перейдет к следующему файлу." if idx < total - 1 else "\nЛюбое другое сообщение отменит удаление."
 
         await message.answer(
-            f"❓ <b>Подтвердите удаление файла:</b>\n\n"
-            f"<code>📁 {_wrap_filename(target['original_name'], indent='   ')}</code>\n"
-            f"� {date_str} | 💾 {size}\n\n"
+            f"❓ <b>Подтвердите удаление файла{counter}:</b>\n\n"
+            f"<code>{icon} {_wrap_filename(target['original_name'], indent='   ')}</code>\n"
+            f"📅 {date_str} | 💾 {size}\n\n"
             f"Для удаления отправьте: <b>да</b>, <b>yes</b> или <b>так</b>.\n"
-            f"Любое другое сообщение или файл отменит удаление."
+            f"{next_info}"
         )
-        log_user_action(user_dir, "bot_response", {"type": "delete_confirmation_request", "file": filename})
+        user_dir = await ensure_user_dir(message.from_user, create=False)
+        log_user_action(user_dir, "bot_response", {"type": "delete_confirmation_request", "file": target['original_name']})
 
     @dp.message(F.document | F.audio | F.video | F.voice | F.sticker | F.video_note | F.photo)
     async def incoming_files_handler(message: Message) -> None:
@@ -328,12 +370,14 @@ def build_dispatcher() -> Dispatcher:
             return
 
         user_id = message.from_user.id
-        cancelled_delete_target = None
+        cancelled_delete_target_name = None
 
         # Отменяем ожидание удаления, если пользователь прислал файл,
         # но сообщение об отмене отправим позже.
         if user_id in pending_deletions:
-            cancelled_delete_target = pending_deletions.pop(user_id)
+            state = pending_deletions.pop(user_id)
+            # Берем имя первого файла из очереди для уведомления об отмене (без расширения)
+            cancelled_delete_target_name = Path(state["targets"][0]["original_name"]).stem
         # Удаляем сообщение /status при получении нового файла
         status_msg_id = user_status_msgs.pop(message.from_user.id, None)
         if status_msg_id:
@@ -377,12 +421,14 @@ def build_dispatcher() -> Dispatcher:
                     new_size = format_size(file_info.get("size", 0))
                     new_date = _format_date(file_info.get("upload_date", ""))
 
+                    old_icon = _get_file_icon(duplicate_info['original_name'])
+                    new_icon = _get_file_icon(file_info['original_name'])
                     await message.answer(
                         f"⚠️ Файл с таким именем уже был:\n"
-                        f"<code>📁 {_wrap_filename(duplicate_info['original_name'], indent='   ')}</code>\n"
+                        f"<code>{old_icon} {_wrap_filename(duplicate_info['original_name'], indent='   ')}</code>\n"
                         f"� {dup_date} | 💾 {dup_size}\n\n"
                         f"✅ Новый файл сохранен под именем:\n"
-                        f"<code>📁 {_wrap_filename(file_info['original_name'], indent='   ')}</code>\n"
+                        f"<code>{new_icon} {_wrap_filename(file_info['original_name'], indent='   ')}</code>\n"
                         f" {new_date} | 💾 {new_size}"
                     )
                     log_user_action(user_dir, "bot_response", {"type": "file_saved_duplicate", "name": file_info['original_name']})
@@ -392,8 +438,8 @@ def build_dispatcher() -> Dispatcher:
                     log_user_action(user_dir, "bot_response", {"type": "file_saved", "name": file_info['original_name']})
 
                 # Отправляем сообщение об отмене удаления, если оно было
-                if cancelled_delete_target:
-                    await message.answer(f"🚫 Удаление файла <code>{cancelled_delete_target['original_name']}</code> отменено.")
+                if cancelled_delete_target_name:
+                    await message.answer(f"🚫 Удаление файлов <code>{cancelled_delete_target_name}</code> отменено.")
                     log_user_action(user_dir, "bot_response", {"type": "delete_cancelled_by_media"})
 
             except (PermissionError, OSError) as e:
@@ -406,11 +452,11 @@ def build_dispatcher() -> Dispatcher:
             return
 
         # Если это не медиа-файл, но был pending_deletions, то отменяем и сообщаем
-        elif cancelled_delete_target:
+        elif cancelled_delete_target_name:
             user_dir = await ensure_user_dir(message.from_user, create=False)
             if user_dir:
                  log_user_action(user_dir, "user_action_cancelled_delete", {"reason": "unexpected_media"})
-                 await message.answer(f"🚫 Удаление файла <code>{cancelled_delete_target['original_name']}</code> отменено.")
+                 await message.answer(f"🚫 Удаление файлов <code>{cancelled_delete_target_name}</code> отменено.")
                  log_user_action(user_dir, "bot_response", {"type": "delete_cancelled_by_media_generic"})
 
 
@@ -429,8 +475,13 @@ def build_dispatcher() -> Dispatcher:
 
         # 1. Проверяем, не является ли сообщение подтверждением удаления
         if user_id in pending_deletions:
-            target = pending_deletions.pop(user_id)
+            state = pending_deletions[user_id]
+            targets = state["targets"]
+            idx = state["index"]
+            target = targets[idx]
+
             if user_text in ["да", "yes", "так"]:
+                pending_deletions.pop(user_id)
                 if user_dir:
                     file_path = user_dir / target["stored_name"]
                     files_data_path = user_dir / "files_data.json"
@@ -460,11 +511,18 @@ def build_dispatcher() -> Dispatcher:
                     await command_status_handler(message) # Вызываем хендлер статуса
                     return # Завершаем обработку после удаления
             else:
-                # Удаление отменено - сообщаем и завершаем обработку
-                if user_dir:
-                    await message.answer(f"🚫 Удаление файла <code>{target['original_name']}</code> отменено.")
-                    log_user_action(user_dir, "bot_response", {"type": "delete_cancelled_by_text"})
-                return # Завершаем обработку, чтобы не было эхо-ответа
+                # Переходим к следующему файлу в очереди или отменяем
+                state["index"] += 1
+                if state["index"] < len(targets):
+                    await _ask_deletion_confirmation(message, targets[state["index"]], state["index"], len(targets))
+                else:
+                    pending_deletions.pop(user_id)
+                    if user_dir:
+                        # Используем stem от первого файла для сообщения об отмене всей группы
+                        group_name = Path(targets[0]['original_name']).stem
+                        await message.answer(f"🚫 Удаление файлов <code>{group_name}</code> отменено.")
+                        log_user_action(user_dir, "bot_response", {"type": "delete_cancelled_by_text"})
+                return
 
         # 2. Проверяем, не является ли текст ссылкой для скачивания
         url = None
@@ -493,9 +551,10 @@ def build_dispatcher() -> Dispatcher:
             try:
                 file_info = await download_file_from_url(url, user_dir)
 
+                icon = _get_file_icon(file_info['original_name'])
                 await status_msg.edit_text(
                     f"✅ Файл успешно скачан и сохранен!\n\n"
-                    f"📁 <b>Имя:</b> <code>{file_info['original_name']}</code>\n"
+                    f"{icon} <b>Имя:</b> <code>{file_info['original_name']}</code>\n"
                     f"💾 <b>Размер:</b> {format_size(file_info['size'])}"
                 )
                 log_user_action(user_dir, "url_download_success", {"url": url, "file": file_info['original_name']})
@@ -511,30 +570,26 @@ def build_dispatcher() -> Dispatcher:
         if user_dir:
             cleaned_name = _clean_filename(message.text)
             files_data = get_user_files(user_dir)
-            # Ищем точное совпадение имени (оригинального)
-            target = next((f for f in files_data if _clean_filename(f.get("original_name", "")) == cleaned_name), None)
+            # Ищем совпадения: если ввод пользователя является частью имени файла
+            targets = [f for f in files_data if cleaned_name in _clean_filename(f.get("original_name", ""))]
 
-            if target:
-                file_path = user_dir / target["stored_name"]
-                if file_path.exists():
-                    try:
-                        # Отправляем найденный файл как документ
-                        await message.answer_document(
-                            document=FSInputFile(path=file_path, filename=target["original_name"]),
-                            caption=f"📁 Файл: {target['original_name']}"
-                        )
-                        log_user_action(user_dir, "bot_response", {"type": "send_file", "file": target['original_name']})
-                        return
-                    except Exception as e:
-                        logger.error(f"Ошибка при отправке документа: {e}")
-                else:
-                    # Файл есть в списке, но удалён с диска
-                    await message.answer(
-                        f"⚠️ Файл <code>{target['original_name']}</code> не найден на диске.\n"
-                        f"Возможно, он был удалён вручную. Используйте /delete для удаления записи."
-                    )
-                    log_user_action(user_dir, "bot_response", {"type": "file_not_found_on_disk", "file": target['original_name']})
-                    return
+            if targets:
+                for target in targets:
+                    file_path = user_dir / target["stored_name"]
+                    if file_path.exists():
+                        try:
+                            # Отправляем найденный файл
+                            icon = _get_file_icon(target['original_name'])
+                            await message.answer_document(
+                                document=FSInputFile(path=file_path, filename=target["original_name"]),
+                                caption=f"{icon} Файл: {target['original_name']}"
+                            )
+                            log_user_action(user_dir, "bot_response", {"type": "send_file", "file": target['original_name']})
+                        except Exception as e:
+                            logger.error(f"Ошибка при отправке документа {target['original_name']}: {e}")
+                    else:
+                        await message.answer(f"⚠️ Файл <code>{target['original_name']}</code> не найден на диске.")
+                return
 
         # 3. Если файл не найден или произошла ошибка — обычное эхо
         try:
