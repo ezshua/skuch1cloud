@@ -8,7 +8,7 @@ from aiogram.types import Message, MessageOriginUser, MessageOriginChat, Message
 from config import BOT_TOTAL_DATA_LIMIT, MAX_DISPLAY_NAME_LEN
 from utils import (
     normalize_filename, unique_path, append_file_data, load_json_list_safe,
-    format_size, get_dir_size, shorten_name, locked_file_data
+    format_size, get_dir_size, shorten_name, locked_file_data, remove_problematic_chars
 )
 
 
@@ -62,10 +62,10 @@ def _generate_display_name(original_name: str, extension: str, metadata: dict, m
 
     # Приоритет: подпись (caption), затем оригинальное имя файла (без расширения)
     if metadata["caption"]:
-        base_name = metadata["caption"]
+        base_name = remove_problematic_chars(metadata["caption"])
     elif original_name:
         # Извлекаем только имя файла без расширения для чистого отображения
-        base_name = Path(original_name).stem
+        base_name = Path(remove_problematic_chars(original_name)).stem
     else:
         # Если имени нет, используем дату и ID без расширения
         base_name = f"{message.date.strftime('%Y%m%d_%H%M%S')}_{message.message_id}"

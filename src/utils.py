@@ -44,6 +44,11 @@ def _get_sync_file_lock(path: Path) -> threading.Lock:
         return lock
 
 
+def remove_problematic_chars(text: str) -> str:
+    """Удаляет слэши, бэкслэши, двоеточие и точки с запятой из текста."""
+    return text.replace("\\", "").replace("/", "").replace(":", "").replace(";", "")
+
+
 def slugify_cyrillic_to_ascii(s: str) -> str:
     """Конвертировать кириллицу в латиницу."""
     mapping = {
