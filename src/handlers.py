@@ -1,4 +1,5 @@
-import logging
+import asyncio
+import json
 import re
 import unicodedata
 from datetime import datetime
@@ -11,10 +12,10 @@ from aiogram.types import Message, FSInputFile, InlineKeyboardMarkup, InlineKeyb
 from config import MAX_FILE_SIZE, BOT_TOTAL_DATA_LIMIT, MAX_DISPLAY_NAME_LEN, ADMIN_ID, FILE_ICONS, logger, get_base_path
 from file_handler import save_incoming_file, get_user_files
 from utils import (
-    format_size, append_file_data, atomic_write_text, get_dir_size, collect_users_summary,
-    log_user_action, load_json_safe, collect_daily_report, shorten_name
+    format_size, atomic_write_text, get_dir_size, collect_users_summary,
+    load_json_safe, collect_daily_report, shorten_name, locked_file_data,
+    async_log_user_action
 )
-import json
 from users import ensure_user_dir
 from texts import get_welcome_message
 from url_handler import download_file_from_url
@@ -27,15 +28,6 @@ async def notify_admin(bot: Bot, text: str) -> None:
             await bot.send_message(ADMIN_ID, text)
         except Exception as e:
             logger.error(f"Ошибка при уведомлении администратора: {e}")
-
-
-async def forward_to_admin(message: Message) -> None:
-    """Пересылает сообщение целиком администратору."""
-    if ADMIN_ID:
-        try:
-            await message.forward(ADMIN_ID)
-        except Exception as e:
-            logger.error(f"Ошибка при пересылке сообщения администратору: {e}")
 
 
 def build_dispatcher() -> Dispatcher:
@@ -55,71 +47,72 @@ def build_dispatcher() -> Dispatcher:
         3. Добавляет новые файлы, найденные в директории.
         """
         files_data_path = user_dir / "files_data.json"
-        existing_data = get_user_files(user_dir)
+        async with locked_file_data(files_data_path):
+            existing_data = get_user_files(user_dir)
 
-        updated_data = []
-        seen_visual_names = []
-        data_changed = False
+            updated_data = []
+            seen_visual_names = []
+            data_changed = False
 
-        # 1 & 2. Очистка и исправление имен (display names) для уже известных файлов
-        for file_info in existing_data:
-            stored_name = file_info.get("stored_name")
-            if not stored_name or not (user_dir / stored_name).exists():
-                data_changed = True
-                continue
+            # 1 & 2. Очистка и исправление имен (display names) для уже известных файлов
+            for file_info in existing_data:
+                stored_name = file_info.get("stored_name")
+                if not stored_name or not (user_dir / stored_name).exists():
+                    data_changed = True
+                    continue
 
-            old_display_name = file_info.get("original_name", "")
+                old_display_name = file_info.get("original_name", "")
 
-            # Для существующих записей проверяем только длину и уникальность.
-            # Не навязываем префиксы, если их нет, просто приводим к лимиту.
-            new_name = shorten_name(old_display_name, MAX_DISPLAY_NAME_LEN, seen_visual_names)
-            if new_name != old_display_name:
-                file_info["original_name"] = new_name
-                data_changed = True
+                # Для существующих записей проверяем только длину и уникальность.
+                # Не навязываем префиксы, если их нет, просто приводим к лимиту.
+                new_name = shorten_name(old_display_name, MAX_DISPLAY_NAME_LEN, seen_visual_names)
+                if new_name != old_display_name:
+                    file_info["original_name"] = new_name
+                    data_changed = True
 
-            updated_data.append(file_info)
-            seen_visual_names.append(file_info["original_name"])
+                updated_data.append(file_info)
+                seen_visual_names.append(file_info["original_name"])
 
-        stored_names = {f.get("stored_name") for f in updated_data}
+            stored_names = {f.get("stored_name") for f in updated_data}
 
-        excluded_files = {"files_data.json", "action_log.json"}
-        temp_extensions = {".tmp", ".download"}
+            excluded_files = {"files_data.json", "action_log.json"}
+            temp_extensions = {".tmp", ".download"}
 
-        for file_path in user_dir.iterdir():
-            if not file_path.is_file() or file_path.name in excluded_files:
-                continue
+            for file_path in user_dir.iterdir():
+                if not file_path.is_file() or file_path.name in excluded_files:
+                    continue
 
-            if file_path.suffix in temp_extensions:
-                try:
-                    file_path.unlink()
-                except Exception:
-                    pass
-                continue
+                if file_path.suffix in temp_extensions:
+                    try:
+                        file_path.unlink()
+                    except Exception:
+                        pass
+                    continue
 
-            if file_path.name not in stored_names:
-                # Убираем ВСЕ технические префиксы из имени файла на диске
-                clean_base = file_path.stem
-                while True:
-                    m = re.match(r'^(fwd|upl|dwn|fnd)_', clean_base)
-                    if not m:
-                        break
-                    clean_base = clean_base[len(m.group(0)):]
+                if file_path.name not in stored_names:
+                    # Убираем ВСЕ технические префиксы из имени файла на диске
+                    clean_base = file_path.stem
+                    while True:
+                        m = re.match(r'^(fwd|upl|dwn|fnd)_', clean_base)
+                        if not m:
+                            break
+                        clean_base = clean_base[len(m.group(0)):]
 
-                # Генерируем уникальное сокращенное имя (не более MAX_DISPLAY_NAME_LEN)
-                new_display_name = shorten_name(f"fnd_{clean_base}", MAX_DISPLAY_NAME_LEN, seen_visual_names)
-                seen_visual_names.append(new_display_name)
+                    # Генерируем уникальное сокращенное имя (не более MAX_DISPLAY_NAME_LEN)
+                    new_display_name = shorten_name(f"fnd_{clean_base}", MAX_DISPLAY_NAME_LEN, seen_visual_names)
+                    seen_visual_names.append(new_display_name)
 
-                # Добавляем файл в список
-                updated_data.append({
-                    "original_name": new_display_name,
-                    "stored_name": file_path.name,
-                    "upload_date": datetime.fromtimestamp(file_path.stat().st_ctime).isoformat(),
-                    "size": file_path.stat().st_size
-                })
-                data_changed = True
+                    # Добавляем файл в список
+                    updated_data.append({
+                        "original_name": new_display_name,
+                        "stored_name": file_path.name,
+                        "upload_date": datetime.fromtimestamp(file_path.stat().st_ctime).isoformat(),
+                        "size": file_path.stat().st_size
+                    })
+                    data_changed = True
 
-        if data_changed or len(updated_data) != len(existing_data):
-            atomic_write_text(files_data_path, json.dumps(updated_data, ensure_ascii=False, indent=2))
+            if data_changed or len(updated_data) != len(existing_data):
+                atomic_write_text(files_data_path, json.dumps(updated_data, ensure_ascii=False, indent=2))
 
 
     def _format_date(raw_date: str) -> str:
@@ -215,7 +208,7 @@ def build_dispatcher() -> Dispatcher:
 
         total_user_size = sum(f.get("size", 0) for f in files)
         base_data_dir = user_dir.parent
-        total_all_size = get_dir_size(base_data_dir)
+        total_all_size = await asyncio.to_thread(get_dir_size, base_data_dir)
         remaining = BOT_TOTAL_DATA_LIMIT - total_all_size
         remaining_str = format_size(max(0, remaining)) if remaining >= 0 else "<i><u>Лимит превышен</u></i>"
 
@@ -257,7 +250,7 @@ def build_dispatcher() -> Dispatcher:
         # Сканируем при запуске
         await scan_and_fix_files(user_dir)
 
-        log_user_action(user_dir, "user_command", {"command": "/start"})
+        await async_log_user_action(user_dir, "user_command", {"command": "/start"})
 
         # Получаем обновленный список файлов
         files = get_user_files(user_dir)
@@ -267,7 +260,7 @@ def build_dispatcher() -> Dispatcher:
         await message.answer(welcome_text)
 
         await notify_admin(message.bot, f"👤 Пользователь {message.from_user.full_name} (@{message.from_user.username}) подключился.")
-        log_user_action(user_dir, "bot_response", {"type": "welcome"})
+        await async_log_user_action(user_dir, "bot_response", {"type": "welcome"})
 
     @dp.message(Command("status"))
     async def command_status_handler(message: Message) -> None:
@@ -289,7 +282,7 @@ def build_dispatcher() -> Dispatcher:
             await message.answer("Пожалуйста, сначала отправьте /start.")
             return
 
-        log_user_action(user_dir, "user_command", {"command": "/status"})
+        await async_log_user_action(user_dir, "user_command", {"command": "/status"})
         response, kb = await _get_status_content(user_dir, page=1)
         sent_message = await message.answer(response, reply_markup=kb)
         # Сохраняем ID сообщения
@@ -297,7 +290,7 @@ def build_dispatcher() -> Dispatcher:
 
         files = get_user_files(user_dir)
         total_size = sum(f.get("size", 0) for f in files)
-        log_user_action(user_dir, "bot_response", {
+        await async_log_user_action(user_dir, "bot_response", {
             "type": "status_summary",
             "files_count": len(files),
             "total_size": format_size(total_size)
@@ -325,12 +318,12 @@ def build_dispatcher() -> Dispatcher:
                 await message.answer(f"📅 Ежедневная рассылка отчетов в полночь <b>{status}</b>.")
                 return
             elif subcommand == "users":
-                report = collect_users_summary(base_path)
+                report = await asyncio.to_thread(collect_users_summary, base_path)
                 await message.answer(report or "👥 Информация о пользователях не найдена.")
                 return
 
         # Стандартное поведение (без аргументов или неизвестный аргумент) — отчет по активности
-        report = collect_daily_report(base_path)
+        report = await asyncio.to_thread(collect_daily_report, base_path)
         if report:
             await message.answer(report)
         else:
@@ -351,7 +344,6 @@ def build_dispatcher() -> Dispatcher:
         except (IndexError, ValueError):
             page = 1
 
-        # log_user_action(user_dir, "user_interaction", {"action": "pagination", "page": page})
         text, kb = await _get_status_content(user_dir, page)
 
         try:
@@ -360,15 +352,6 @@ def build_dispatcher() -> Dispatcher:
             # Ошибка может возникнуть, если сообщение не изменилось
             pass
         await callback.answer()
-
-        # files = get_user_files(user_dir)
-        # total_size = sum(f.get("size", 0) for f in files)
-        # log_user_action(user_dir, "bot_response", {
-        #     "type": "status_summary_pagination",
-        #     "page": page,
-        #     "files_count": len(files),
-        #     "total_size": format_size(total_size)
-        # })
 
 
     @dp.message(Command("delete"))
@@ -388,7 +371,7 @@ def build_dispatcher() -> Dispatcher:
             await message.answer("Пожалуйста, сначала отправьте /start.")
             return
 
-        log_user_action(user_dir, "user_command", {"command": f"/delete {filename}"})
+        await async_log_user_action(user_dir, "user_command", {"command": f"/delete {filename}"})
 
         if not filename:
             await message.answer("❌ Указанное имя содержит только спецсимволы и не может быть использовано для поиска.")
@@ -430,7 +413,7 @@ def build_dispatcher() -> Dispatcher:
             f"{next_info}"
         )
         user_dir = await ensure_user_dir(message.from_user, create=False)
-        log_user_action(user_dir, "bot_response", {"type": "delete_confirmation_request", "file": target['stored_name']})
+        await async_log_user_action(user_dir, "bot_response", {"type": "delete_confirmation_request", "file": target['stored_name']})
 
     @dp.message(F.document | F.audio | F.video | F.voice | F.sticker | F.video_note | F.photo)
     async def incoming_files_handler(message: Message) -> None:
@@ -476,7 +459,7 @@ def build_dispatcher() -> Dispatcher:
             if not user_dir or not user_dir.exists():
                 await message.answer("Пожалуйста, сначала отправьте /start.")
                 return
-            log_user_action(user_dir, "user_upload", {"media_type": type(media_obj).__name__, "size": media_obj.file_size})
+            await async_log_user_action(user_dir, "user_upload", {"media_type": type(media_obj).__name__, "size": media_obj.file_size})
 
             try:
                 file_info, duplicate_info = await save_incoming_file(message, None, user_dir)
@@ -495,26 +478,26 @@ def build_dispatcher() -> Dispatcher:
                     await message.answer(
                         f"⚠️ Файл с таким именем уже был:\n"
                         f"<code>{old_icon} {_wrap_filename(duplicate_info['original_name'], indent='   ')}</code>\n"
-                        f"� {dup_date} | 💾 {dup_size}\n\n"
+                        f"📅 {dup_date} | 💾 {dup_size}\n\n"
                         f"✅ Новый файл сохранен под именем:\n"
                         f"<code>{new_icon} {_wrap_filename(file_info['original_name'], indent='   ')}</code>\n"
-                        f" {new_date} | 💾 {new_size}"
+                        f"📅 {new_date} | 💾 {new_size}"
                     )
-                    log_user_action(user_dir, "bot_response", {"type": "file_saved_duplicate", "name": file_info['original_name']})
+                    await async_log_user_action(user_dir, "bot_response", {"type": "file_saved_duplicate", "name": file_info['original_name']})
                 else:
                     # Добавляем размер сохраненного файла
                     await message.answer(f"✅ Файл сохранен. 💾{format_size(file_info['size'])}")
-                    log_user_action(user_dir, "bot_response", {"type": "file_saved", "name": file_info['original_name']})
+                    await async_log_user_action(user_dir, "bot_response", {"type": "file_saved", "name": file_info['original_name']})
 
                 # Отправляем сообщение об отмене удаления, если оно было
                 if cancelled_delete_target_name:
                     await message.answer(f"🚫 Удаление файлов <code>{cancelled_delete_target_name}</code> отменено.")
-                    log_user_action(user_dir, "bot_response", {"type": "delete_cancelled_by_media"})
+                    await async_log_user_action(user_dir, "bot_response", {"type": "delete_cancelled_by_media"})
 
             except (PermissionError, OSError) as e:
                 # Вывод понятного сообщения пользователю при проблемах с местом
                 await message.answer(f"⚠️ {e}")
-                log_user_action(user_dir, "bot_response", {"type": "storage_error", "details": str(e)})
+                await async_log_user_action(user_dir, "bot_response", {"type": "storage_error", "details": str(e)})
             except Exception as e:
                 logger.exception("Ошибка при сохранении файла:")
                 await message.answer(f"⚠️ Ошибка при сохранении: {type(e).__name__}: {e}")
@@ -524,9 +507,9 @@ def build_dispatcher() -> Dispatcher:
         elif cancelled_delete_target_name:
             user_dir = await ensure_user_dir(message.from_user, create=False)
             if user_dir:
-                 log_user_action(user_dir, "user_action_cancelled_delete", {"reason": "unexpected_media"})
-                 await message.answer(f"🚫 Удаление файлов <code>{cancelled_delete_target_name}</code> отменено.")
-                 log_user_action(user_dir, "bot_response", {"type": "delete_cancelled_by_media_generic"})
+                await async_log_user_action(user_dir, "user_action_cancelled_delete", {"reason": "unexpected_media"})
+                await message.answer(f"🚫 Удаление файлов <code>{cancelled_delete_target_name}</code> отменено.")
+                await async_log_user_action(user_dir, "bot_response", {"type": "delete_cancelled_by_media_generic"})
 
 
     @dp.message(F.text)
@@ -540,7 +523,7 @@ def build_dispatcher() -> Dispatcher:
 
         user_dir = await ensure_user_dir(message.from_user, create=False)
         if user_dir:
-            log_user_action(user_dir, "user_text", {"text": message.text})
+            await async_log_user_action(user_dir, "user_text", {"text": message.text})
 
         # 1. Проверяем, не является ли сообщение подтверждением удаления
         if user_id in pending_deletions:
@@ -555,17 +538,18 @@ def build_dispatcher() -> Dispatcher:
                     file_path = user_dir / target["stored_name"]
                     files_data_path = user_dir / "files_data.json"
 
-                    # Удаляем физически
-                    if file_path.exists():
-                        file_path.unlink()
+                    async with locked_file_data(files_data_path):
+                        # Удаляем физически
+                        if file_path.exists():
+                            file_path.unlink()
 
-                    # Обновляем JSON (удаляем запись)
-                    files_data = get_user_files(user_dir)
-                    updated_data = [f for f in files_data if f.get("stored_name") != target["stored_name"]]
-                    atomic_write_text(files_data_path, json.dumps(updated_data, ensure_ascii=False, indent=2))
+                        # Обновляем JSON (удаляем запись)
+                        files_data = get_user_files(user_dir)
+                        updated_data = [f for f in files_data if f.get("stored_name") != target["stored_name"]]
+                        atomic_write_text(files_data_path, json.dumps(updated_data, ensure_ascii=False, indent=2))
 
                     await message.answer(f"✅ Файл <code>{target['stored_name']}</code> удален.")
-                    log_user_action(user_dir, "bot_response", {"type": "delete_success", "file": target['stored_name']})
+                    await async_log_user_action(user_dir, "bot_response", {"type": "delete_success", "file": target['stored_name']})
 
                     # Удаляем старое сообщение статуса и вызываем новый статус
                     prev_status_id = user_status_msgs.pop(user_id, None)
@@ -590,7 +574,7 @@ def build_dispatcher() -> Dispatcher:
                         # Используем stem от первого файла для сообщения об отмене всей группы
                         group_name = targets[0]['original_name']
                         await message.answer(f"🚫 Удаление файлов <code>{group_name}</code> отменено.")
-                        log_user_action(user_dir, "bot_response", {"type": "delete_cancelled_by_text"})
+                        await async_log_user_action(user_dir, "bot_response", {"type": "delete_cancelled_by_text"})
                 return
 
         # 2. Проверяем, не является ли текст ссылкой для скачивания
@@ -626,7 +610,7 @@ def build_dispatcher() -> Dispatcher:
                     f"{icon} <b>Имя:</b> <code>{file_info['original_name']}</code>\n"
                     f"💾 <b>Размер:</b> {format_size(file_info['size'])}"
                 )
-                log_user_action(user_dir, "url_download_success", {"url": url, "file": file_info['original_name']})
+                await async_log_user_action(user_dir, "url_download_success", {"url": url, "file": file_info['original_name']})
                 return
             except (PermissionError, ValueError) as e:
                 await status_msg.edit_text(f"⚠️ {e}")
@@ -669,7 +653,7 @@ def build_dispatcher() -> Dispatcher:
                                 document=FSInputFile(path=file_path, filename=clean_name),
                                 caption=f"{icon} Файл: <code>{target['stored_name']}</code>"
                             )
-                            log_user_action(user_dir, "bot_response", {"type": "send_file", "file": target['original_name']})
+                            await async_log_user_action(user_dir, "bot_response", {"type": "send_file", "file": target['original_name']})
                         except Exception as e:
                             logger.error(f"Ошибка при отправке документа {target['original_name']}: {e}")
                     else:
@@ -680,7 +664,7 @@ def build_dispatcher() -> Dispatcher:
         try:
             await message.answer(f"📢 <b>Эхо:</b> {message.text}")
             if user_dir:
-                log_user_action(user_dir, "bot_response", {"type": "echo", "text": message.text})
+                await async_log_user_action(user_dir, "bot_response", {"type": "echo", "text": message.text})
         except Exception:
             await message.answer("Я принимаю только файлы или имена ваших файлов.")
 

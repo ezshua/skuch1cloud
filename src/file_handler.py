@@ -6,7 +6,10 @@ from pathlib import Path
 from aiogram.types import Message, MessageOriginUser, MessageOriginChat, MessageOriginChannel, MessageOriginHiddenUser
 
 from config import BOT_TOTAL_DATA_LIMIT, MAX_DISPLAY_NAME_LEN
-from utils import normalize_filename, unique_path, append_file_data, slugify_cyrillic_to_ascii, load_json_list_safe, format_size, get_dir_size, shorten_name
+from utils import (
+    normalize_filename, unique_path, append_file_data, load_json_list_safe,
+    format_size, get_dir_size, shorten_name, locked_file_data
+)
 
 
 
@@ -113,21 +116,11 @@ async def save_incoming_file(message: Message, file_name: str | None, destinatio
     # 1. Извлекаем метаданные и формируем имена
     metadata = _extract_metadata(message)
 
-    # Получаем список уже существующих отображаемых имен пользователя
-    files_data = get_user_files(destination_dir)
-    existing_visual_names = [f.get("original_name") for f in files_data]
-
-    # База для физического имени (сохраняем старую логику)
-    storage_base = _generate_storage_base_name(original_name, extension, metadata, message)
-
-    # Сначала генерируем базовое имя для проверки на дубликат
-    display_name_base = _generate_display_name(original_name, extension, metadata, message)
-
     file_size = content.file_size or 0
 
     # ПРОВЕРКА ОБЩЕГО ОБЪЕМА ДАННЫХ
     base_data_dir = destination_dir.parent
-    current_usage = get_dir_size(base_data_dir)
+    current_usage = await asyncio.to_thread(get_dir_size, base_data_dir)
     if current_usage + file_size > BOT_TOTAL_DATA_LIMIT:
         remaining_quota = max(0, BOT_TOTAL_DATA_LIMIT - current_usage)
         raise PermissionError(f"Превышен лимит хранилища бота ({format_size(BOT_TOTAL_DATA_LIMIT)}). "
@@ -138,46 +131,58 @@ async def save_incoming_file(message: Message, file_name: str | None, destinatio
     if disk_usage.free < file_size:
         raise OSError(f"На физическом диске сервера недостаточно места. Свободно: {format_size(disk_usage.free)}.")
 
-    # ПРОВЕРКА НА ДУБЛИКАТ (был ли файл с таким же исходным "визуальным" именем)
-    duplicate_info = next((f for f in files_data if f.get("original_name") == display_name_base), None)
-
-    # Теперь генерируем окончательное имя с учетом уникальности (циферка в точках)
-    display_name = shorten_name(display_name_base, MAX_DISPLAY_NAME_LEN, existing_visual_names)
-
-    final_name = normalize_filename(storage_base or display_name)
-    # Используем file_id для временного файла, чтобы избежать конфликтов при одновременной загрузке
+    files_data_path = destination_dir / "files_data.json"
     tmp_path = destination_dir / f"{content.file_id}.download"
 
     try:
-        # Гарантируем, что папка пользователя существует на диске перед скачиванием
-        destination_dir.mkdir(parents=True, exist_ok=True)
+        async with locked_file_data(files_data_path):
+            # Получаем список уже существующих отображаемых имен пользователя под lock'ом.
+            files_data = get_user_files(destination_dir)
+            existing_visual_names = [f.get("original_name") for f in files_data]
 
-        # Ограничиваем время скачивания из Telegram (например, 2 минуты)
-        try:
-            await asyncio.wait_for(message.bot.download(content.file_id, destination=tmp_path), timeout=120)
-        except asyncio.TimeoutError:
-            # Выбрасываем OSError, так как он уже красиво обрабатывается в handlers.py
-            raise OSError("Загрузка файла из Telegram заняла слишком много времени (тайм-аут).")
+            # База для физического имени (сохраняем старую логику)
+            storage_base = _generate_storage_base_name(original_name, extension, metadata, message)
 
-        if not tmp_path.exists():
-            raise FileNotFoundError(f"Временный файл не найден после загрузки: {tmp_path}")
+            # Сначала генерируем базовое имя для проверки на дубликат
+            display_name_base = _generate_display_name(original_name, extension, metadata, message)
 
-        # Вычисляем финальный путь только после загрузки, чтобы избежать гонки имен (например, в альбомах)
-        final_path = unique_path(destination_dir / final_name)
-        await asyncio.to_thread(shutil.move, str(tmp_path), str(final_path))
+            # ПРОВЕРКА НА ДУБЛИКАТ (был ли файл с таким же исходным "визуальным" именем)
+            duplicate_info = next((f for f in files_data if f.get("original_name") == display_name_base), None)
 
-        file_info = {
-            "original_name": display_name,
-            "stored_name": final_path.name,
-            "upload_date": datetime.now().isoformat(),  # Используем локальное наивное время для консистентности
-            "size": file_size
-        }
-        append_file_data(destination_dir / "files_data.json", file_info)
-        return file_info, duplicate_info
-    except Exception as e:
+            # Теперь генерируем окончательное имя с учетом уникальности (циферка в точках)
+            display_name = shorten_name(display_name_base, MAX_DISPLAY_NAME_LEN, existing_visual_names)
+
+            final_name = normalize_filename(storage_base or display_name)
+
+            # Гарантируем, что папка пользователя существует на диске перед скачиванием
+            destination_dir.mkdir(parents=True, exist_ok=True)
+
+            # Ограничиваем время скачивания из Telegram (например, 2 минуты)
+            try:
+                await asyncio.wait_for(message.bot.download(content.file_id, destination=tmp_path), timeout=120)
+            except asyncio.TimeoutError:
+                # Выбрасываем OSError, так как он уже красиво обрабатывается в handlers.py
+                raise OSError("Загрузка файла из Telegram заняла слишком много времени (тайм-аут).")
+
+            if not tmp_path.exists():
+                raise FileNotFoundError(f"Временный файл не найден после загрузки: {tmp_path}")
+
+            # Вычисляем финальный путь под lock'ом, чтобы избежать гонки имен (например, в альбомах)
+            final_path = unique_path(destination_dir / final_name)
+            await asyncio.to_thread(shutil.move, str(tmp_path), str(final_path))
+
+            file_info = {
+                "original_name": display_name,
+                "stored_name": final_path.name,
+                "upload_date": datetime.now().isoformat(),  # Используем локальное наивное время для консистентности
+                "size": file_size
+            }
+            append_file_data(files_data_path, file_info)
+            return file_info, duplicate_info
+    except Exception:
         if tmp_path.exists():
             tmp_path.unlink(missing_ok=True)
-        raise e
+        raise
 
 
 

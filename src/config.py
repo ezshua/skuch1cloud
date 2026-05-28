@@ -81,12 +81,33 @@ def _ensure_env_populated():
 _ensure_env_populated()
 load_dotenv()
 
+
+def _get_int_env(name: str, default: int) -> int:
+    """Получить положительную целочисленную переменную окружения."""
+    raw_value = os.getenv(name)
+    if raw_value is None or raw_value == "":
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError:
+        raise RuntimeError(f"{name} must be an integer.") from None
+    if value <= 0:
+        raise RuntimeError(f"{name} must be greater than zero.")
+    return value
+
+
 # Константы (загружаются из .env)
-MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", 20 * 1024 * 1024)) # Лимит Telegram на скачивание файлов для ботов (по умолчанию 20 МБ)
-BOT_TOTAL_DATA_LIMIT = int(os.getenv("BOT_DATA_PATH_SIZE", 500 * 1024 * 1024)) # Общий лимит для всех пользователей (по умолчанию 500 МБ)
-LOG_FILE_SIZE_LIMIT = int(os.getenv("LOG_FILE_SIZE_LIMIT", 5 * 1024 * 1024)) # Лимит на размер журнала действий (по умолчанию 5 МБ)
+MAX_FILE_SIZE = _get_int_env("MAX_FILE_SIZE", 20 * 1024 * 1024) # Лимит Telegram на скачивание файлов для ботов (по умолчанию 20 МБ)
+BOT_TOTAL_DATA_LIMIT = _get_int_env("BOT_DATA_PATH_SIZE", 500 * 1024 * 1024) # Общий лимит для всех пользователей (по умолчанию 500 МБ)
+LOG_FILE_SIZE_LIMIT = _get_int_env("LOG_FILE_SIZE_LIMIT", 5 * 1024 * 1024) # Лимит на размер журнала действий (по умолчанию 5 МБ)
 MAX_DISPLAY_NAME_LEN = 37 # Максимальная длина имени файла для отображения в интерфейсе
-ADMIN_ID = int(os.getenv("ADMIN_ACCOUNT_ID", 0)) # ID администратора для уведомлений
+_admin_raw = os.getenv("ADMIN_ACCOUNT_ID")
+try:
+    ADMIN_ID: int | None = int(_admin_raw) if _admin_raw else None # ID администратора для уведомлений
+except ValueError:
+    raise RuntimeError("ADMIN_ACCOUNT_ID must be an integer.") from None
+if ADMIN_ID is not None and ADMIN_ID <= 0:
+    raise RuntimeError("ADMIN_ACCOUNT_ID must be greater than zero.")
 # Если вы хотите лимит на пользователя, это будет сложнее, так как директории пользователей могут быть разных размеров.
 # Для простоты пока общий лимит.
 

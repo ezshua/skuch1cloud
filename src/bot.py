@@ -1,6 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta
-from aiogram import Bot, Dispatcher
+from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
@@ -25,7 +25,7 @@ async def daily_report_task(bot: Bot):
                 # Проверяем флаг в состоянии бота, прежде чем отправлять отчет
                 state = load_json_safe(get_base_path() / "bot_state.json")
                 if state.get("daily_report_enabled", True):
-                    report = collect_daily_report(get_base_path())
+                    report = await asyncio.to_thread(collect_daily_report, get_base_path())
                     if report:
                         await bot.send_message(ADMIN_ID, report)
         except Exception as e:

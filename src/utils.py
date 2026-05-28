@@ -1,8 +1,47 @@
+import asyncio
+import threading
+from contextlib import asynccontextmanager
 import json
 import re
 from pathlib import Path
 from datetime import datetime, timedelta
 from config import LOG_FILE_SIZE_LIMIT
+
+
+_file_data_locks: dict[Path, asyncio.Lock] = {}
+_file_data_locks_guard = asyncio.Lock()
+_sync_file_locks: dict[Path, threading.Lock] = {}
+_sync_file_locks_guard = threading.Lock()
+
+
+async def _get_file_data_lock(files_data_path: Path) -> asyncio.Lock:
+    """Вернуть общий lock для конкретного files_data.json в рамках процесса."""
+    key = files_data_path.resolve()
+    async with _file_data_locks_guard:
+        lock = _file_data_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _file_data_locks[key] = lock
+        return lock
+
+
+@asynccontextmanager
+async def locked_file_data(files_data_path: Path):
+    """Сериализовать read-modify-write операции с индексом файлов пользователя."""
+    lock = await _get_file_data_lock(files_data_path)
+    async with lock:
+        yield
+
+
+def _get_sync_file_lock(path: Path) -> threading.Lock:
+    """Вернуть синхронный lock для read-modify-write операций с JSON-файлом."""
+    key = path.resolve()
+    with _sync_file_locks_guard:
+        lock = _sync_file_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _sync_file_locks[key] = lock
+        return lock
 
 
 def slugify_cyrillic_to_ascii(s: str) -> str:
@@ -167,24 +206,30 @@ def append_file_data(files_data_path: Path, file_info: dict) -> None:
 def log_user_action(user_dir: Path, action_type: str, details: dict) -> None:
     """
     Записать действие в журнал пользователя с контролем размера файла.
-    Если размер файла превышает лимит, удаляет около 2% старых записей.
+    Если размер файла превышает лимит, удаляет около 20% старых записей.
     """
     log_path = user_dir / "action_log.json"
-    data = load_json_list_safe(log_path)
+    with _get_sync_file_lock(log_path):
+        data = load_json_list_safe(log_path)
 
-    # Проверка размера и ротация (2% старых записей)
-    if log_path.exists() and log_path.stat().st_size > LOG_FILE_SIZE_LIMIT:
-        if data:
-            remove_count = max(1, len(data) // 50)  # 2% от общего числа записей
-            data = data[remove_count:]
+        # Проверка размера и ротация: оставляем последние 80% записей.
+        if log_path.exists() and log_path.stat().st_size > LOG_FILE_SIZE_LIMIT:
+            if data:
+                keep_count = max(1, int(len(data) * 0.8))
+                data = data[-keep_count:]
 
-    entry = {
-        "timestamp": datetime.now().isoformat(),
-        "type": action_type,
-        "details": details
-    }
-    data.append(entry)
-    atomic_write_text(log_path, json.dumps(data, ensure_ascii=False, indent=2))
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "type": action_type,
+            "details": details
+        }
+        data.append(entry)
+        atomic_write_text(log_path, json.dumps(data, ensure_ascii=False, indent=2))
+
+
+async def async_log_user_action(user_dir: Path, action_type: str, details: dict) -> None:
+    """Записать действие пользователя, не блокируя async event loop."""
+    await asyncio.to_thread(log_user_action, user_dir, action_type, details)
 
 
 def cleanup_temp_files(path: Path) -> None:
