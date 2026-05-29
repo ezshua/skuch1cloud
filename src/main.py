@@ -5,7 +5,10 @@ from bot import run_polling
 
 def main() -> None:
     """Главная точка входа."""
-    asyncio.run(run_polling())
+    try:
+        asyncio.run(run_polling())
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":
