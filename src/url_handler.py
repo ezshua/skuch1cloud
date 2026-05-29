@@ -1,6 +1,7 @@
 import aiohttp
 import asyncio
 import ipaddress
+import mimetypes
 import shutil
 import re
 import socket
@@ -23,6 +24,23 @@ from utils import (
 # the previous permissive behavior.
 SSRF_PROTECTION_ENABLED = True
 MAX_REDIRECTS = 5
+MAX_EXTENSION_LEN = 10
+GENERIC_CONTENT_TYPES = {"application/octet-stream", "binary/octet-stream"}
+CONTENT_TYPE_EXTENSIONS = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "image/bmp": ".bmp",
+    "image/tiff": ".tiff",
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
+    "audio/mpeg": ".mp3",
+    "audio/ogg": ".ogg",
+    "application/pdf": ".pdf",
+    "application/zip": ".zip",
+}
 
 
 async def ensure_public_download_url(url: str) -> None:
@@ -117,6 +135,73 @@ def extract_filename_from_content_disposition(content_disposition: str) -> str |
         return None
     return unquote(filename)
 
+
+def extension_from_content_type(content_type: str) -> str:
+    """Вернуть файловое расширение по Content-Type, если тип известен."""
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    if not media_type or media_type in GENERIC_CONTENT_TYPES:
+        return ""
+
+    ext = CONTENT_TYPE_EXTENSIONS.get(media_type) or mimetypes.guess_extension(media_type) or ""
+    if ext == ".jpe":
+        return ".jpg"
+    return ext
+
+
+def filename_has_likely_extension(file_name: str) -> bool:
+    """Проверить, что имя заканчивается на похожее расширение, а не на хвост ID."""
+    suffix = Path(file_name).suffix
+    return bool(suffix and 1 < len(suffix) <= MAX_EXTENSION_LEN and re.fullmatch(r"\.[A-Za-z0-9]+", suffix))
+
+
+def add_extension_from_content_type(file_name: str, content_type: str) -> str:
+    """Добавить расширение из Content-Type, если в имени его нет."""
+    if filename_has_likely_extension(file_name):
+        return file_name
+
+    ext = extension_from_content_type(content_type)
+    if not ext:
+        return file_name
+
+    return f"{file_name}{ext}"
+
+
+def extension_from_file_signature(file_path: Path) -> str:
+    """Определить расширение по первым байтам файла, если HTTP-заголовки бесполезны."""
+    header = file_path.read_bytes()[:16]
+    if header.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if header.startswith((b"GIF87a", b"GIF89a")):
+        return ".gif"
+    if header.startswith(b"RIFF") and header[8:12] == b"WEBP":
+        return ".webp"
+    if header.startswith(b"%PDF-"):
+        return ".pdf"
+    if header.startswith(b"PK\x03\x04"):
+        return ".zip"
+    if header[4:8] == b"ftyp":
+        return ".mp4"
+    if header.startswith(b"OggS"):
+        return ".ogg"
+    if header.startswith(b"ID3"):
+        return ".mp3"
+    return ""
+
+
+def add_extension_from_file_signature(file_name: str, file_path: Path) -> str:
+    """Добавить расширение по сигнатуре скачанного файла, если в имени его нет."""
+    if filename_has_likely_extension(file_name):
+        return file_name
+
+    ext = extension_from_file_signature(file_path)
+    if not ext:
+        return file_name
+
+    return f"{file_name}{ext}"
+
+
 async def download_file_from_url(url: str, destination_dir: Path, is_retry: bool = False) -> dict:
     """
     Скачивает файл по ссылке и сохраняет его в директорию пользователя.
@@ -191,22 +276,12 @@ async def download_file_from_url(url: str, destination_dir: Path, is_retry: bool
                 if not original_name or original_name == '.':
                     original_name = datetime.now().strftime('%Y%m%d_%H%M%S')
 
+                original_name = add_extension_from_content_type(original_name, content_type)
+
                 files_data_path = destination_dir / "files_data.json"
                 async with locked_file_data(files_data_path):
-                    existing_files = load_json_list_safe(files_data_path)
-                    existing_visual_names = [f.get("original_name") for f in existing_files]
-
-                    # Применяем префикс URL и сокращаем имя для отображения
-                    display_name = shorten_name(
-                        f"dwn_{original_name}",
-                        MAX_DISPLAY_NAME_LEN,
-                        existing_visual_names,
-                    )
-
-                    final_name = normalize_filename(display_name)
-                    tmp_path = destination_dir / f"{final_name}.{uuid4().hex}.download"
-
                     destination_dir.mkdir(parents=True, exist_ok=True)
+                    tmp_path = destination_dir / f"{uuid4().hex}.download"
 
                     # 3. Скачивание с контролем размера в процессе
                     downloaded_size = 0
@@ -225,6 +300,19 @@ async def download_file_from_url(url: str, destination_dir: Path, is_retry: bool
                         tmp_path.unlink(missing_ok=True)
                         raise PermissionError("Превышен общий лимит хранилища бота.")
 
+                    original_name = add_extension_from_file_signature(original_name, tmp_path)
+
+                    existing_files = load_json_list_safe(files_data_path)
+                    existing_visual_names = [f.get("original_name") for f in existing_files]
+
+                    # Применяем префикс URL и сокращаем имя для отображения
+                    display_name = shorten_name(
+                        f"dwn_{original_name}",
+                        MAX_DISPLAY_NAME_LEN,
+                        existing_visual_names,
+                    )
+
+                    final_name = normalize_filename(display_name)
                     final_path = unique_path(destination_dir / final_name)
                     shutil.move(str(tmp_path), str(final_path))
 

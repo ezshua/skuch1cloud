@@ -146,6 +146,23 @@ def build_dispatcher() -> Dispatcher:
         return FILE_ICONS["document"]
 
 
+    def _format_saved_file_message(file_info: dict) -> str:
+        """Единый расширенный ответ после успешного сохранения файла."""
+        display_name = file_info.get("original_name", "Unknown")
+        stored_name = file_info.get("stored_name", display_name)
+        icon = _get_file_icon(stored_name)
+        size = format_size(file_info.get("size", 0))
+        date_str = _format_date(file_info.get("upload_date", ""))
+
+        return (
+            "✅ Файл сохранен.\n\n"
+            f"{icon} <b>Имя:</b> <code>{_wrap_filename(display_name, indent='   ')}</code>\n"
+            f"📄 <b>Файл:</b> <code>{_wrap_filename(stored_name, indent='   ')}</code>\n"
+            f"💾 <b>Размер:</b> {size}\n"
+            f"📅 <b>Дата:</b> {date_str}"
+        )
+
+
     def _clean_filename(text: str) -> str:
         """Нормализует имя файла для сравнения: NFKC, удаление невидимых символов и пробелов."""
         # 1. Удаляем номер в начале списка (например, "37. ")
@@ -465,28 +482,10 @@ def build_dispatcher() -> Dispatcher:
                 file_info, duplicate_info = await save_incoming_file(message, None, user_dir)
 
                 if duplicate_info:
-                    # Форматируем данные о дубликате
-                    dup_size = format_size(duplicate_info.get("size", 0))
-                    dup_date = _format_date(duplicate_info.get("upload_date", ""))
-
-                    # Форматируем данные о новом файле
-                    new_size = format_size(file_info.get("size", 0))
-                    new_date = _format_date(file_info.get("upload_date", ""))
-
-                    old_icon = _get_file_icon(duplicate_info.get("stored_name", duplicate_info['original_name']))
-                    new_icon = _get_file_icon(file_info.get("stored_name", file_info['original_name']))
-                    await message.answer(
-                        f"⚠️ Файл с таким именем уже был:\n"
-                        f"<code>{old_icon} {_wrap_filename(duplicate_info['original_name'], indent='   ')}</code>\n"
-                        f"📅 {dup_date} | 💾 {dup_size}\n\n"
-                        f"✅ Новый файл сохранен под именем:\n"
-                        f"<code>{new_icon} {_wrap_filename(file_info['original_name'], indent='   ')}</code>\n"
-                        f"📅 {new_date} | 💾 {new_size}"
-                    )
+                    await message.answer(_format_saved_file_message(file_info))
                     await async_log_user_action(user_dir, "bot_response", {"type": "file_saved_duplicate", "name": file_info['original_name']})
                 else:
-                    # Добавляем размер сохраненного файла
-                    await message.answer(f"✅ Файл сохранен. 💾{format_size(file_info['size'])}")
+                    await message.answer(_format_saved_file_message(file_info))
                     await async_log_user_action(user_dir, "bot_response", {"type": "file_saved", "name": file_info['original_name']})
 
                 # Отправляем сообщение об отмене удаления, если оно было
@@ -604,12 +603,7 @@ def build_dispatcher() -> Dispatcher:
             try:
                 file_info = await download_file_from_url(url, user_dir)
 
-                icon = _get_file_icon(file_info.get("stored_name", file_info['original_name']))
-                await status_msg.edit_text(
-                    f"✅ Файл успешно скачан и сохранен!\n\n"
-                    f"{icon} <b>Имя:</b> <code>{file_info['original_name']}</code>\n"
-                    f"💾 <b>Размер:</b> {format_size(file_info['size'])}"
-                )
+                await status_msg.edit_text(_format_saved_file_message(file_info))
                 await async_log_user_action(user_dir, "url_download_success", {"url": url, "file": file_info['original_name']})
                 return
             except (PermissionError, ValueError) as e:
