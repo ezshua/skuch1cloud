@@ -202,6 +202,13 @@ def add_extension_from_file_signature(file_name: str, file_path: Path) -> str:
     return f"{file_name}{ext}"
 
 
+def display_name_from_download_name(file_name: str) -> str:
+    """Вернуть имя для списка файлов без последнего расширения."""
+    if filename_has_likely_extension(file_name):
+        return Path(file_name).stem
+    return file_name
+
+
 async def download_file_from_url(url: str, destination_dir: Path, is_retry: bool = False) -> dict:
     """
     Скачивает файл по ссылке и сохраняет его в директорию пользователя.
@@ -305,14 +312,15 @@ async def download_file_from_url(url: str, destination_dir: Path, is_retry: bool
                     existing_files = load_json_list_safe(files_data_path)
                     existing_visual_names = [f.get("original_name") for f in existing_files]
 
-                    # Применяем префикс URL и сокращаем имя для отображения
+                    # В отображаемом имени расширение скрываем. Тип файла виден по иконке.
                     display_name = shorten_name(
-                        f"dwn_{original_name}",
+                        f"dwn_{display_name_from_download_name(original_name)}",
                         MAX_DISPLAY_NAME_LEN,
                         existing_visual_names,
                     )
 
-                    final_name = normalize_filename(display_name)
+                    storage_name = shorten_name(f"dwn_{original_name}", MAX_DISPLAY_NAME_LEN)
+                    final_name = normalize_filename(storage_name)
                     final_path = unique_path(destination_dir / final_name)
                     shutil.move(str(tmp_path), str(final_path))
 
