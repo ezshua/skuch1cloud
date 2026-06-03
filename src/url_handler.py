@@ -13,9 +13,10 @@ from uuid import uuid4
 
 from config import MAX_FILE_SIZE, BOT_TOTAL_DATA_LIMIT, MAX_DISPLAY_NAME_LEN, logger
 from utils import (
-    normalize_filename, unique_path, append_file_data, format_size, get_dir_size,
+    normalize_filename, unique_path, append_file_data, get_dir_size,
     shorten_name, locked_file_data, load_json_list_safe
 )
+from ui_formatter import format_size
 
 
 # SSRF protection:

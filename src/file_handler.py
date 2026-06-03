@@ -8,8 +8,9 @@ from aiogram.types import Message, MessageOriginUser, MessageOriginChat, Message
 from config import BOT_TOTAL_DATA_LIMIT, MAX_DISPLAY_NAME_LEN
 from utils import (
     normalize_filename, unique_path, append_file_data, load_json_list_safe,
-    format_size, get_dir_size, shorten_name, locked_file_data, remove_problematic_chars
+    get_dir_size, shorten_name, locked_file_data, remove_problematic_chars
 )
+from ui_formatter import format_size
 
 
 

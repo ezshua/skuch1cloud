@@ -6,7 +6,8 @@ from aiogram.enums import ParseMode
 
 from config import get_bot_token, get_base_path, ADMIN_ID, logger
 from handlers import build_dispatcher, notify_admin
-from utils import cleanup_temp_files, collect_daily_report, load_json_safe
+from utils import cleanup_temp_files, load_json_safe
+from reporting import collect_daily_report
 
 
 async def daily_report_task(bot: Bot):

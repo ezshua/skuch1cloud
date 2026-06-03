@@ -12,10 +12,15 @@ from aiogram.types import Message, FSInputFile, InlineKeyboardMarkup, InlineKeyb
 from config import MAX_FILE_SIZE, BOT_TOTAL_DATA_LIMIT, MAX_DISPLAY_NAME_LEN, ADMIN_ID, FILE_ICONS, logger, get_base_path
 from file_handler import save_incoming_file, get_user_files
 from utils import (
-    format_size, atomic_write_text, get_dir_size, collect_users_summary,
-    load_json_safe, collect_daily_report, shorten_name, locked_file_data,
+    atomic_write_text, get_dir_size,
+    load_json_safe, shorten_name, locked_file_data,
     async_log_user_action
 )
+from ui_formatter import (
+    format_size, format_date, wrap_filename, get_file_icon,
+    format_saved_file_message, strip_display_extension
+)
+from reporting import collect_daily_report, collect_users_summary
 from users import ensure_user_dir
 from texts import get_welcome_message
 from url_handler import download_file_from_url
@@ -62,7 +67,7 @@ def build_dispatcher() -> Dispatcher:
                     continue
 
                 old_display_name = file_info.get("original_name", "")
-                old_display_name = _strip_display_extension(old_display_name, stored_name)
+                old_display_name = strip_display_extension(old_display_name, stored_name)
 
                 # Для существующих записей проверяем только длину и уникальность.
                 # Не навязываем префиксы, если их нет, просто приводим к лимиту.
@@ -123,62 +128,6 @@ def build_dispatcher() -> Dispatcher:
                 atomic_write_text(files_data_path, json.dumps(updated_data, ensure_ascii=False, indent=2))
 
 
-    def _format_date(raw_date: str) -> str:
-        """Форматировать ISO-дату в читаемый вид, вернуть 'неизвестно' при ошибке."""
-        try:
-            return datetime.fromisoformat(raw_date).strftime("%d.%m.%Y %H:%M:%S")
-        except (ValueError, TypeError):
-            return "неизвестно"
-
-
-    def _wrap_filename(name: str, width: int = 37, indent: str = "      ") -> str:
-        """Разбивает имя файла на части для предотвращения некрасивого переноса в Telegram."""
-        if len(name) <= width:
-            return name
-        # Разбиваем строку на куски по width символов
-        chunks = [name[i:i + width] for i in range(0, len(name), width)]
-        return f"\n{indent}".join(chunks)
-
-
-    def _get_file_icon(filename: str) -> str:
-        """Определяет иконку на основе расширения файла."""
-        name_lower = filename.lower()
-        if name_lower.endswith(('.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff')):
-            return FILE_ICONS["image"]
-        if name_lower.endswith(('.mp4', '.mov', '.avi', '.mkv', '.3gp', '.flv')):
-            return FILE_ICONS["video"]
-        if name_lower.endswith(('.mp3', '.wav', '.ogg', '.m4a', '.flac', '.aac')):
-            return FILE_ICONS["audio"]
-        if name_lower.endswith(('.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz')):
-            return FILE_ICONS["archive"]
-        return FILE_ICONS["document"]
-
-
-    def _strip_display_extension(display_name: str, stored_name: str) -> str:
-        """Убрать расширение из отображаемого имени, не меняя имя файла на диске."""
-        ext = Path(stored_name).suffix
-        if ext and display_name.lower().endswith(ext.lower()):
-            return display_name[:-len(ext)]
-        return display_name
-
-
-    def _format_saved_file_message(file_info: dict) -> str:
-        """Единый расширенный ответ после успешного сохранения файла."""
-        display_name = file_info.get("original_name", "Unknown")
-        stored_name = file_info.get("stored_name", display_name)
-        icon = _get_file_icon(stored_name)
-        size = format_size(file_info.get("size", 0))
-        date_str = _format_date(file_info.get("upload_date", ""))
-
-        return (
-            "✅ Файл сохранен.\n\n"
-            f"{icon} <b>Имя:</b> <code>{_wrap_filename(display_name, indent='   ')}</code>\n"
-            f"📄 <b>Файл:</b> <code>{_wrap_filename(stored_name, indent='   ')}</code>\n"
-            f"💾 <b>Размер:</b> {size}\n"
-            f"📅 <b>Дата:</b> {date_str}"
-        )
-
-
     def _clean_filename(text: str) -> str:
         """Нормализует имя файла для сравнения: NFKC, удаление невидимых символов и пробелов."""
         # 1. Удаляем номер в начале списка (например, "37. ")
@@ -222,7 +171,10 @@ def build_dispatcher() -> Dispatcher:
         # 6. Удаляем невидимые символы: вариаторы (\ufe00-\ufe0f), ZWSP (\u200b), мягкие переносы (\u00ad) и др.
         text = re.sub(r'[\u00ad\u200b-\u200d\ufeff\ufe00-\ufe0f]', '', text)
 
-        # 7. Удаляем все пробелы, табы и переносы строк, приводим к нижнему регистру.
+        # 7. Удаляем маркеры уникальности (..1..) и сокращения (....), созданные shorten_name
+        text = re.sub(r'\.\.\d+\.\.|\.\.\.\.', '', text)
+
+        # 8. Удаляем все пробелы, табы и переносы строк, приводим к нижнему регистру.
         return "".join(text.split()).lower()
 
 
@@ -252,14 +204,14 @@ def build_dispatcher() -> Dispatcher:
         for i, file_info in enumerate(page_files, start_idx + 1):
             name = file_info.get("original_name", "Unknown")
             size = format_size(file_info.get("size", 0))
-            date_str = _format_date(file_info.get("upload_date", ""))
+            date_str = format_date(file_info.get("upload_date", ""))
             # Определяем иконку по физическому имени, так как в визуальном расширения может не быть
-            icon = _get_file_icon(file_info.get("stored_name", name))
+            icon = get_file_icon(file_info.get("stored_name", name))
 
             # Отображаем имя целиком (оно уже сокращено функцией shorten_name и содержит уникальные индексы)
             prefix = f"{i}. {icon} "
             # Динамический отступ, чтобы имя во второй строке было ровно под именем в первой
-            wrapped_name = _wrap_filename(name, indent=" " * len(prefix))
+            wrapped_name = wrap_filename(name, indent=" " * len(prefix))
             lines.append(f"{prefix}<code>{wrapped_name}</code>\n   📅 {date_str} | 💾 {size}\n")
 
         response = header + "".join(lines)
@@ -432,15 +384,15 @@ def build_dispatcher() -> Dispatcher:
     async def _ask_deletion_confirmation(message: Message, target: dict, idx: int, total: int):
         """Вспомогательная функция для запроса подтверждения удаления."""
         size = format_size(target.get("size", 0))
-        date_str = _format_date(target.get("upload_date", ""))
-        icon = _get_file_icon(target.get("stored_name", target['original_name']))
+        date_str = format_date(target.get("upload_date", ""))
+        icon = get_file_icon(target.get("stored_name", target['original_name']))
 
         counter = f" (файл {idx + 1} из {total})" if total > 1 else ""
         next_info = "\nЛюбое другое сообщение перейдет к следующему файлу." if idx < total - 1 else "\nЛюбое другое сообщение отменит удаление."
 
         await message.answer(
             f"❓ <b>Подтвердите удаление файла{counter}:</b>\n\n"
-            f"<code>{icon} {_wrap_filename(target['stored_name'], indent='   ')}</code>\n"
+            f"<code>{icon} {wrap_filename(target['stored_name'], indent='   ')}</code>\n"
             f"📅 {date_str} | 💾 {size}\n\n"
             f"Для удаления отправьте: <b>да</b>, <b>yes</b> или <b>так</b>.\n"
             f"{next_info}"
@@ -498,10 +450,10 @@ def build_dispatcher() -> Dispatcher:
                 file_info, duplicate_info = await save_incoming_file(message, None, user_dir)
 
                 if duplicate_info:
-                    await message.answer(_format_saved_file_message(file_info))
+                    await message.answer(format_saved_file_message(file_info))
                     await async_log_user_action(user_dir, "bot_response", {"type": "file_saved_duplicate", "name": file_info['original_name']})
                 else:
-                    await message.answer(_format_saved_file_message(file_info))
+                    await message.answer(format_saved_file_message(file_info))
                     await async_log_user_action(user_dir, "bot_response", {"type": "file_saved", "name": file_info['original_name']})
 
                 # Отправляем сообщение об отмене удаления, если оно было
@@ -619,7 +571,7 @@ def build_dispatcher() -> Dispatcher:
             try:
                 file_info = await download_file_from_url(url, user_dir)
 
-                await status_msg.edit_text(_format_saved_file_message(file_info))
+                await status_msg.edit_text(format_saved_file_message(file_info))
                 await async_log_user_action(user_dir, "url_download_success", {"url": url, "file": file_info['original_name']})
                 return
             except (PermissionError, ValueError) as e:
@@ -635,14 +587,15 @@ def build_dispatcher() -> Dispatcher:
             cleaned_name = _clean_filename(message.text)
             if cleaned_name:
                 files_data = get_user_files(user_dir)
-                # 1. Сначала ищем точное совпадение (приоритет уникальности)
-                targets = [f for f in files_data if _clean_filename(f.get("original_name", "")) == cleaned_name]
-                if not targets:
-                    if len(cleaned_name) < 3:
-                        await message.answer("⚠️ Имя слишком короткое для поиска по частичному совпадению (нужно минимум 3 символа).")
-                        return
-                    # 2. Если точного нет, ищем вхождения (подстроку)
+
+                # Ищем все файлы, которые содержат поисковый запрос.
+                # Для очень коротких запросов (меньше 3 символов) оставляем только точное совпадение, чтобы избежать спама.
+                if len(cleaned_name) < 3:
+                    targets = [f for f in files_data if _clean_filename(f.get("original_name", "")) == cleaned_name]
+                else:
                     targets = [f for f in files_data if cleaned_name in _clean_filename(f.get("original_name", ""))]
+                    # Дополнительно можно отсортировать, чтобы точные совпадения шли первыми
+                    targets.sort(key=lambda f: _clean_filename(f.get("original_name", "")) != cleaned_name)
 
             if targets:
                 for target in targets:
@@ -658,7 +611,7 @@ def build_dispatcher() -> Dispatcher:
                             if ext and not clean_name.lower().endswith(ext.lower()):
                                 clean_name += ext
 
-                            icon = _get_file_icon(target.get("stored_name", target['original_name']))
+                            icon = get_file_icon(target.get("stored_name", target['original_name']))
                             await message.answer_document(
                                 document=FSInputFile(path=file_path, filename=clean_name),
                                 caption=f"{icon} Файл: <code>{target['stored_name']}</code>"
