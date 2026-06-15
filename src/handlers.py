@@ -42,6 +42,7 @@ def build_dispatcher() -> Dispatcher:
     # Словари для хранения состояния бота
     user_status_msgs: dict[int, int] = {}
     pending_deletions: dict[int, dict] = {}
+    user_media_modes: dict[int, bool] = {}
     FILES_PER_PAGE = 10
 
 
@@ -128,14 +129,6 @@ def build_dispatcher() -> Dispatcher:
             if data_changed or len(updated_data) != len(existing_data):
                 atomic_write_text(files_data_path, json.dumps(updated_data, ensure_ascii=False, indent=2))
 
-
-    def _load_user_settings(user_dir: Path) -> dict:
-        settings_path = user_dir / "user_settings.json"
-        return load_json_safe(settings_path)
-
-    def _save_user_settings(user_dir: Path, settings: dict) -> None:
-        settings_path = user_dir / "user_settings.json"
-        atomic_write_text(settings_path, json.dumps(settings, ensure_ascii=False, indent=2))
 
     def _is_photo(stored_name: str) -> bool:
         return Path(stored_name).suffix.lower() in ('.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp')
@@ -247,6 +240,8 @@ def build_dispatcher() -> Dispatcher:
         if not message.from_user:
             return
         user_dir = await ensure_user_dir(message.from_user, create=True)
+        # Сбрасываем режим медиа при запуске
+        user_media_modes[message.from_user.id] = False
         # Сканируем при запуске
         await scan_and_fix_files(user_dir)
 
@@ -305,9 +300,7 @@ def build_dispatcher() -> Dispatcher:
         if not user_dir:
             await message.answer("Пожалуйста, сначала отправьте /start.")
             return
-        settings = _load_user_settings(user_dir)
-        settings["media_mode"] = True
-        _save_user_settings(user_dir, settings)
+        user_media_modes[message.from_user.id] = True
         await message.answer(format_media_mode_message(True))
         await async_log_user_action(user_dir, "user_command", {"command": "/mediaon"})
 
@@ -320,9 +313,7 @@ def build_dispatcher() -> Dispatcher:
         if not user_dir:
             await message.answer("Пожалуйста, сначала отправьте /start.")
             return
-        settings = _load_user_settings(user_dir)
-        settings["media_mode"] = False
-        _save_user_settings(user_dir, settings)
+        user_media_modes[message.from_user.id] = False
         await message.answer(format_media_mode_message(False))
         await async_log_user_action(user_dir, "user_command", {"command": "/mediaoff"})
 
@@ -731,8 +722,7 @@ def build_dispatcher() -> Dispatcher:
                     targets.sort(key=lambda f: _clean_filename(f.get("original_name", "")) != cleaned_name)
 
             if targets:
-                settings = _load_user_settings(user_dir)
-                media_mode = settings.get("media_mode", False)
+                media_mode = user_media_modes.get(message.from_user.id, False)
                 for target in targets:
                     file_path = user_dir / target["stored_name"]
                     if file_path.exists():
