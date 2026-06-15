@@ -57,6 +57,13 @@ def format_saved_file_message(file_info: dict) -> str:
         f"📅 <b>Дата:</b> {date_str}"
     )
 
+def format_media_mode_message(enabled: bool) -> str:
+    """Сформировать сообщение о переключении режима мультимедиа."""
+    if enabled:
+        return "🎬 Мультимедийный режим включен.\nФото и видео будут отправляться как медиа."
+    return "📄 Режим документов включен.\nВсе файлы будут отправляться как документы."
+
+
 def strip_display_extension(display_name: str, stored_name: str) -> str:
     """Убрать расширение из отображаемого имени, не меняя имя файла на диске."""
     ext = Path(stored_name).suffix

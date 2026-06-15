@@ -18,7 +18,7 @@ from utils import (
 )
 from ui_formatter import (
     format_size, format_date, wrap_filename, get_file_icon,
-    format_saved_file_message, strip_display_extension
+    format_saved_file_message, strip_display_extension, format_media_mode_message
 )
 from reporting import collect_daily_report, collect_users_summary
 from users import ensure_user_dir
@@ -127,6 +127,20 @@ def build_dispatcher() -> Dispatcher:
             if data_changed or len(updated_data) != len(existing_data):
                 atomic_write_text(files_data_path, json.dumps(updated_data, ensure_ascii=False, indent=2))
 
+
+    def _load_user_settings(user_dir: Path) -> dict:
+        settings_path = user_dir / "user_settings.json"
+        return load_json_safe(settings_path)
+
+    def _save_user_settings(user_dir: Path, settings: dict) -> None:
+        settings_path = user_dir / "user_settings.json"
+        atomic_write_text(settings_path, json.dumps(settings, ensure_ascii=False, indent=2))
+
+    def _is_photo(stored_name: str) -> bool:
+        return Path(stored_name).suffix.lower() in ('.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp')
+
+    def _is_video(stored_name: str) -> bool:
+        return Path(stored_name).suffix.lower() in ('.mp4', '.mov', '.avi', '.mkv', '.3gp')
 
     def _clean_filename(text: str) -> str:
         """Нормализует имя файла для сравнения: NFKC, удаление невидимых символов и пробелов."""
@@ -280,6 +294,36 @@ def build_dispatcher() -> Dispatcher:
             "files_count": len(files),
             "total_size": format_size(total_size)
         })
+
+    @dp.message(Command("mediaon"))
+    async def command_mediaon_handler(message: Message) -> None:
+        """Включить мультимедийный режим выдачи файлов."""
+        if not message.from_user:
+            return
+        user_dir = await ensure_user_dir(message.from_user, create=True)
+        if not user_dir:
+            await message.answer("Пожалуйста, сначала отправьте /start.")
+            return
+        settings = _load_user_settings(user_dir)
+        settings["media_mode"] = True
+        _save_user_settings(user_dir, settings)
+        await message.answer(format_media_mode_message(True))
+        await async_log_user_action(user_dir, "user_command", {"command": "/mediaon"})
+
+    @dp.message(Command("mediaoff"))
+    async def command_mediaoff_handler(message: Message) -> None:
+        """Выключить мультимедийный режим (по умолчанию — документы)."""
+        if not message.from_user:
+            return
+        user_dir = await ensure_user_dir(message.from_user, create=True)
+        if not user_dir:
+            await message.answer("Пожалуйста, сначала отправьте /start.")
+            return
+        settings = _load_user_settings(user_dir)
+        settings["media_mode"] = False
+        _save_user_settings(user_dir, settings)
+        await message.answer(format_media_mode_message(False))
+        await async_log_user_action(user_dir, "user_command", {"command": "/mediaoff"})
 
     @dp.message(Command("report"), F.from_user.id == ADMIN_ID)
     async def command_report_handler(message: Message) -> None:
@@ -598,6 +642,8 @@ def build_dispatcher() -> Dispatcher:
                     targets.sort(key=lambda f: _clean_filename(f.get("original_name", "")) != cleaned_name)
 
             if targets:
+                settings = _load_user_settings(user_dir)
+                media_mode = settings.get("media_mode", False)
                 for target in targets:
                     file_path = user_dir / target["stored_name"]
                     if file_path.exists():
@@ -612,10 +658,22 @@ def build_dispatcher() -> Dispatcher:
                                 clean_name += ext
 
                             icon = get_file_icon(target.get("stored_name", target['original_name']))
-                            await message.answer_document(
-                                document=FSInputFile(path=file_path, filename=clean_name),
-                                caption=f"{icon} Файл: <code>{target['stored_name']}</code>"
-                            )
+                            stored = target["stored_name"]
+                            if media_mode and _is_photo(stored):
+                                await message.answer_photo(
+                                    photo=FSInputFile(path=file_path),
+                                    caption=f"{icon} Файл: <code>{stored}</code>"
+                                )
+                            elif media_mode and _is_video(stored):
+                                await message.answer_video(
+                                    video=FSInputFile(path=file_path),
+                                    caption=f"{icon} Файл: <code>{stored}</code>"
+                                )
+                            else:
+                                await message.answer_document(
+                                    document=FSInputFile(path=file_path, filename=clean_name),
+                                    caption=f"{icon} Файл: <code>{stored}</code>"
+                                )
                             await async_log_user_action(user_dir, "bot_response", {"type": "send_file", "file": target['original_name']})
                         except Exception as e:
                             logger.error(f"Ошибка при отправке документа {target['original_name']}: {e}")
