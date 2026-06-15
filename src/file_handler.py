@@ -98,7 +98,12 @@ async def save_incoming_file(message: Message, file_name: str | None, destinatio
     elif message.voice:
         content, extension = message.voice, ".ogg"
     elif message.sticker:
-        content, extension = message.sticker, ".webp"
+        if message.sticker.is_video:
+            content, extension = message.sticker, ".mp4"
+        elif message.sticker.is_animated:
+            content, extension = message.sticker, ".tgs"
+        else:
+            content, extension = message.sticker, ".webp"
     elif message.video_note:
         content, extension = message.video_note, ".mp4"
     elif message.photo:
