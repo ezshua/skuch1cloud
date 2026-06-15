@@ -7,7 +7,7 @@ from pathlib import Path
 
 from aiogram import Dispatcher, F, Bot
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import Message, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, InputMediaPhoto, InputMediaVideo
 
 from config import MAX_FILE_SIZE, BOT_TOTAL_DATA_LIMIT, MAX_DISPLAY_NAME_LEN, ADMIN_ID, FILE_ICONS, logger, get_base_path
 from file_handler import save_incoming_file, get_user_files
@@ -18,7 +18,8 @@ from utils import (
 )
 from ui_formatter import (
     format_size, format_date, wrap_filename, get_file_icon,
-    format_saved_file_message, strip_display_extension, format_media_mode_message
+    format_saved_file_message, strip_display_extension, format_media_mode_message,
+    format_preview_caption
 )
 from reporting import collect_daily_report, collect_users_summary
 from users import ensure_user_dir
@@ -324,6 +325,94 @@ def build_dispatcher() -> Dispatcher:
         _save_user_settings(user_dir, settings)
         await message.answer(format_media_mode_message(False))
         await async_log_user_action(user_dir, "user_command", {"command": "/mediaoff"})
+
+    PREVIEW_PER_PAGE = 10
+    PREVIEW_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.mp4', '.mov', '.avi', '.mkv', '.3gp')
+
+    def _get_preview_files(user_dir: Path) -> list[dict]:
+        files = get_user_files(user_dir)
+        return [f for f in files if Path(f["stored_name"]).suffix.lower() in PREVIEW_EXTENSIONS]
+
+    def _is_video_file(stored_name: str) -> bool:
+        return Path(stored_name).suffix.lower() in ('.mp4', '.mov', '.avi', '.mkv', '.3gp')
+
+    async def _send_preview_album(message: Message, user_dir: Path, page: int) -> None:
+        preview_files = _get_preview_files(user_dir)
+        if not preview_files:
+            await message.answer("Нет файлов для превью (фото и видео).")
+            return
+
+        total_pages = (len(preview_files) + PREVIEW_PER_PAGE - 1) // PREVIEW_PER_PAGE
+        page = max(1, min(page, total_pages))
+        start_idx = (page - 1) * PREVIEW_PER_PAGE
+        page_files = preview_files[start_idx:start_idx + PREVIEW_PER_PAGE]
+
+        media_group = []
+        for file_info in page_files:
+            file_path = user_dir / file_info["stored_name"]
+            if not file_path.exists():
+                continue
+            caption = format_preview_caption(file_info)
+            if _is_video_file(file_info["stored_name"]):
+                media_group.append(InputMediaVideo(media=FSInputFile(path=file_path), caption=caption))
+            else:
+                media_group.append(InputMediaPhoto(media=FSInputFile(path=file_path), caption=caption))
+
+        if not media_group:
+            await message.answer("Файлы не найдены на диске.")
+            return
+
+        await message.answer_media_group(media_group)
+
+        buttons = []
+        if page > 1:
+            buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"preview_page:{page-1}"))
+        if page < total_pages:
+            buttons.append(InlineKeyboardButton(text="Вперед ➡️", callback_data=f"preview_page:{page+1}"))
+        kb = InlineKeyboardMarkup(inline_keyboard=[buttons]) if buttons else None
+
+        info_text = f"🖼️ Превью (стр. {page}/{total_pages}) — {len(preview_files)} файлов"
+        await message.answer(info_text, reply_markup=kb)
+
+    @dp.message(Command("preview"))
+    async def command_preview_handler(message: Message) -> None:
+        if not message.from_user:
+            return
+        user_dir = await ensure_user_dir(message.from_user, create=False)
+        if not user_dir:
+            await message.answer("Пожалуйста, сначала отправьте /start.")
+            return
+
+        args = message.text.split()
+        page = 1
+        if len(args) > 1:
+            try:
+                page = int(args[1])
+            except ValueError:
+                pass
+
+        await _send_preview_album(message, user_dir, page)
+        await async_log_user_action(user_dir, "user_command", {"command": f"/preview {page}"})
+
+    @dp.callback_query(F.data.startswith("preview_page:"))
+    async def preview_pagination_handler(callback: CallbackQuery) -> None:
+        user_dir = await ensure_user_dir(callback.from_user, create=False)
+        if not user_dir:
+            await callback.answer("Ошибка сессии. Введите /start", show_alert=True)
+            return
+
+        try:
+            page = int(callback.data.split(":")[1])
+        except (IndexError, ValueError):
+            page = 1
+
+        await callback.answer()
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+
+        await _send_preview_album(callback.message, user_dir, page)
 
     @dp.message(Command("report"), F.from_user.id == ADMIN_ID)
     async def command_report_handler(message: Message) -> None:

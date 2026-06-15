@@ -64,6 +64,14 @@ def format_media_mode_message(enabled: bool) -> str:
     return "📄 Режим документов включен.\nВсе файлы будут отправляться как документы."
 
 
+def format_preview_caption(file_info: dict) -> str:
+    """Сформировать подпись для элемента альбома превью."""
+    name = file_info.get("original_name", "Unknown")
+    size = format_size(file_info.get("size", 0))
+    date_str = format_date(file_info.get("upload_date", ""))
+    return f"{name}\n{size} | {date_str}"
+
+
 def strip_display_extension(display_name: str, stored_name: str) -> str:
     """Убрать расширение из отображаемого имени, не меняя имя файла на диске."""
     ext = Path(stored_name).suffix
