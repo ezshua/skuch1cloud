@@ -186,6 +186,31 @@ def build_dispatcher() -> Dispatcher:
         return "".join(text.split()).lower()
 
 
+    def _build_message_url(message: Message) -> str | None:
+        """Возвращает ссылку на исходное сообщение, если Telegram поддерживает такой URL."""
+        if message.chat.type in {"group", "supergroup", "channel"} and message.chat.username:
+            return f"https://t.me/{message.chat.username}/{message.message_id}"
+
+        chat_id = str(message.chat.id)
+        if message.chat.type in {"supergroup", "channel"} and chat_id.startswith("-100"):
+            return f"https://t.me/c/{chat_id[4:]}/{message.message_id}"
+
+        return None
+
+
+    def _format_oversized_file_message(size_mb: float, message: Message) -> str:
+        text = (
+            f"⚠️ Файл слишком большой ({size_mb} МБ).\n"
+            f"Telegram ограничивает ботов скачиванием файлов до 20 МБ."
+        )
+
+        message_url = _build_message_url(message)
+        if message_url:
+            text += f"\n\nСсылка на сообщение: {message_url}"
+
+        return text
+
+
     async def _get_status_content(user_dir: Path, page: int = 1):
         """Формирует текст и клавиатуру для команды /status с учетом пагинации."""
         files = get_user_files(user_dir)
@@ -558,10 +583,7 @@ def build_dispatcher() -> Dispatcher:
             # ПРОВЕРКА РАЗМЕРА ФАЙЛА (20 МБ)
             if media_obj.file_size and media_obj.file_size > MAX_FILE_SIZE:
                 size_mb = round(media_obj.file_size / (1024 * 1024), 2)
-                await message.answer(
-                    f"⚠️ Файл слишком большой ({size_mb} МБ).\n"
-                    f"Telegram ограничивает ботов скачиванием файлов до 20 МБ."
-                )
+                await message.answer(_format_oversized_file_message(size_mb, message))
                 return
 
             user_dir = await ensure_user_dir(message.from_user, create=False)
